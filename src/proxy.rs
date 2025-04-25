@@ -538,8 +538,8 @@ async fn handle_sse_event(state: Arc<Mutex<AppState>>, sse_event: SSEEvent) -> R
         }
         SSEEvent::Message(JSONRPCMessage::Response(response)) => {
             let mut state_guard = state.lock().await;
-
-            // Extract the proper key for lookup
+            // The key is always a UUID string, and we expect out IDs in responses,
+            // so we need to convert to string here
             let lookup_key = response.id.to_string();
 
             if let Some(original_id) = state_guard.id_map.remove(&lookup_key) {
@@ -632,20 +632,7 @@ async fn handle_io_event(
         JSONRPCMessage::Response(response) => {
             // Extract the proper key for lookup
             let lookup_key = response.id.to_string();
-
-            debug!("Response ID raw value: {:?}", response.id);
-            debug!(
-                "Looking for key: {:?} (length: {})",
-                lookup_key,
-                lookup_key.len()
-            );
-            debug!(
-                "Map keys: {:?}",
-                state_guard.id_map.keys().collect::<Vec<_>>()
-            );
-
             let id_map_entry = state_guard.id_map.remove(&lookup_key);
-            debug!("ID map entry: {:?}", id_map_entry);
 
             if let Some(original_id) = id_map_entry {
                 drop(state_guard);
