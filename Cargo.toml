@@ -1,5 +1,5 @@
 [package]
-name = "mcp_proxy_rust"
+name = "mcp-proxy"
 version = "0.1.0"
 edition = "2024"
 
@@ -20,10 +20,7 @@ futures = "0.3.31"
 url = "2.5.4"
 
 [dev-dependencies]
-axum = { version = "0.8", features = ["macros", "json"] }
-async-stream = "0.3"
-once_cell = "1.18"
-tokio-stream = "0.1"
+axum = { version = "0.8", features = ["macros"] }
 tokio-util = "0.7.15"
 
 [profile.release]
