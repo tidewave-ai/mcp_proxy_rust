@@ -1,4 +1,4 @@
-name: Build & Release
+name: Rust Release
 
 on:
   push:
@@ -14,7 +14,7 @@ on:
 
 jobs:
   release:
-    name: Release - ${{ matrix.platform.os-name }}
+    name: ${{ matrix.platform.os-name }}
     strategy:
       matrix:
         platform:
@@ -29,6 +29,14 @@ jobs:
           - os-name: Linux-aarch64
             runs-on: ubuntu-24.04
             target: aarch64-unknown-linux-gnu
+
+          - os-name: Linux-x86_64-musl
+            runs-on: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+
+          - os-name: Linux-aarch64-musl
+            runs-on: ubuntu-24.04
+            target: aarch64-unknown-linux-musl
 
           - os-name: Linux-riscv64
             runs-on: ubuntu-24.04
