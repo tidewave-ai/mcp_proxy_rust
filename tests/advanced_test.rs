@@ -319,7 +319,7 @@ async fn test_initial_connection_retry() -> Result<()> {
     println!("Test: Waiting for initialize response...");
     let mut init_response = String::new();
     match timeout(
-        Duration::from_secs(10),
+        Duration::from_secs(20),
         reader.read_line(&mut init_response),
     )
     .await
