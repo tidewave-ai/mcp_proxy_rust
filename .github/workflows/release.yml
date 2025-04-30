@@ -65,7 +65,7 @@ jobs:
           args: "--locked --release"
           strip: true
       - name: Publish artifacts and release
-        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631
+        uses: houseabsolute/actions-rust-release@48ce35fb40c3dab00791a3d6c485022341354c44
         with:
           executable-name: mcp-proxy
           changes-file: ''
