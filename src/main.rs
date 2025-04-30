@@ -33,10 +33,9 @@ type StdoutSink = FramedWrite<Stdout, StdoutCodec>;
 
 // --- Helper for Initial Connection ---
 const INITIAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(5 * 60); // 5 minutes
-const INITIAL_CONNECT_RETRY_DELAY: Duration = Duration::from_secs(5); // 5 seconds
 
 /// Attempts to establish the initial SSE connection, retrying on failure.
-async fn connect_with_retry(sse_url: &str) -> Result<SseClientTransport> {
+async fn connect_with_retry(sse_url: &str, delay: Duration) -> Result<SseClientTransport> {
     let start_time = Instant::now();
     let mut attempts = 0;
 
@@ -81,8 +80,8 @@ async fn connect_with_retry(sse_url: &str) -> Result<SseClientTransport> {
             ));
         }
 
-        info!("Retrying in {:?}...", INITIAL_CONNECT_RETRY_DELAY);
-        sleep(INITIAL_CONNECT_RETRY_DELAY).await;
+        info!("Retrying in {:?}...", delay);
+        sleep(delay).await;
     }
 }
 
@@ -126,7 +125,8 @@ async fn main() -> Result<()> {
 
     // Establish initial SSE connection using the retry helper
     info!("Attempting initial connection to {}...", sse_url);
-    let mut transport = connect_with_retry(&sse_url).await?;
+    let mut transport =
+        connect_with_retry(&sse_url, Duration::from_secs(args.initial_retry_interval)).await?;
 
     info!("Connection established. Proxy operational.");
     app_state.state = ProxyState::WaitingForClientInit;

@@ -284,6 +284,8 @@ async fn test_initial_connection_retry() -> Result<()> {
     cmd.arg("run")
         .arg("--")
         .arg(&server_url)
+        .arg("--initial-retry-interval")
+        .arg("1")
         .stdout(std::process::Stdio::piped())
         .stdin(std::process::Stdio::piped());
     let mut child = cmd.spawn()?;
@@ -319,7 +321,7 @@ async fn test_initial_connection_retry() -> Result<()> {
     println!("Test: Waiting for initialize response...");
     let mut init_response = String::new();
     match timeout(
-        Duration::from_secs(20),
+        Duration::from_secs(10),
         reader.read_line(&mut init_response),
     )
     .await

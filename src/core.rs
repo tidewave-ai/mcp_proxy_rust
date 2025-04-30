@@ -1,10 +1,5 @@
 use crate::state::{AppState, BufferMode, ProxyState, ReconnectFailureReason};
-use crate::{
-    DISCONNECTED_ERROR_CODE,
-    SseClientTransport,
-    StdoutSink,
-    TRANSPORT_SEND_ERROR_CODE,
-};
+use crate::{DISCONNECTED_ERROR_CODE, SseClientTransport, StdoutSink, TRANSPORT_SEND_ERROR_CODE};
 use anyhow::Result;
 use futures::{FutureExt, SinkExt, StreamExt};
 use rmcp::{
