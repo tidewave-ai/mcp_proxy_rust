@@ -1,39 +1,95 @@
-mod models;
-mod proxy;
-mod sse;
-
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::Parser;
+use futures::StreamExt;
+use rmcp::{
+    model::{ClientJsonRpcMessage, ErrorCode, ServerJsonRpcMessage},
+    transport::sse::{ReqwestSseClient, SseTransport, SseTransportRetryConfig},
+};
 use std::env;
-use std::io::Write;
-use tracing::{debug, info};
+use tokio::io::{Stdin, Stdout};
+use tokio::time::{Duration, Instant, sleep};
+use tokio_util::codec::{FramedRead, FramedWrite};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::FmtSubscriber;
 
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    /// The URL of the SSE endpoint to connect to
-    #[arg(value_name = "URL")]
-    sse_url: Option<String>,
+// Modules
+mod cli;
+mod core;
+mod state;
 
-    /// Enable debug logging
-    #[arg(long)]
-    debug: bool,
+use crate::cli::Args;
+use crate::core::flush_buffer_with_errors;
+use crate::state::{AppState, ProxyState}; // Only needed directly by main for final check
 
-    /// Maximum time to try reconnecting in seconds
-    #[arg(long)]
-    max_disconnected_time: Option<u64>,
+// Custom Error Codes (Keep here or move to common/state? Keeping here for now)
+const DISCONNECTED_ERROR_CODE: ErrorCode = ErrorCode(-32010);
+const TRANSPORT_SEND_ERROR_CODE: ErrorCode = ErrorCode(-32011);
 
-    /// Maximum time to wait for a response from the server in milliseconds
-    #[arg(long, default_value = "60000")]
-    receive_timeout: u64,
+type SseClientTransport = SseTransport<ReqwestSseClient, reqwest::Error>;
+type StdinCodec = rmcp::transport::io::JsonRpcMessageCodec<ClientJsonRpcMessage>;
+type StdoutCodec = rmcp::transport::io::JsonRpcMessageCodec<ServerJsonRpcMessage>;
+type StdinStream = FramedRead<Stdin, StdinCodec>;
+type StdoutSink = FramedWrite<Stdout, StdoutCodec>;
+
+// --- Helper for Initial Connection ---
+const INITIAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(5 * 60); // 5 minutes
+const INITIAL_CONNECT_RETRY_DELAY: Duration = Duration::from_secs(5); // 5 seconds
+
+/// Attempts to establish the initial SSE connection, retrying on failure.
+async fn connect_with_retry(sse_url: &str) -> Result<SseClientTransport> {
+    let start_time = Instant::now();
+    let mut attempts = 0;
+
+    loop {
+        attempts += 1;
+        info!(
+            "Attempting initial SSE connection (attempt {})...",
+            attempts
+        );
+
+        // Try creating the client first, as this can fail due to URL parsing etc.
+        match ReqwestSseClient::new(sse_url) {
+            Ok(client) => {
+                match SseTransport::start_with_client(client).await {
+                    Ok(mut transport) => {
+                        info!("Initial connection successful!");
+                        // Configure transport to not retry internally after initial connect
+                        transport.retry_config = SseTransportRetryConfig {
+                            max_times: Some(0),
+                            min_duration: Duration::from_millis(0),
+                        };
+                        return Ok(transport);
+                    }
+                    Err(e) => {
+                        warn!("Attempt {} failed to start transport: {}", attempts, e);
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Attempt {} failed to create SSE client: {}", attempts, e);
+            }
+        }
+
+        if start_time.elapsed() >= INITIAL_CONNECT_TIMEOUT {
+            error!(
+                "Failed to connect after {} attempts over {:?}. Giving up.",
+                attempts, INITIAL_CONNECT_TIMEOUT
+            );
+            return Err(anyhow!(
+                "Initial connection timed out after {:?}",
+                INITIAL_CONNECT_TIMEOUT
+            ));
+        }
+
+        info!("Retrying in {:?}...", INITIAL_CONNECT_RETRY_DELAY);
+        sleep(INITIAL_CONNECT_RETRY_DELAY).await;
+    }
 }
 
+// --- Main Function ---
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-
-    // Set up logging
     let log_level = if args.debug {
         tracing::Level::DEBUG
     } else {
@@ -47,21 +103,87 @@ async fn main() -> Result<()> {
 
     tracing::subscriber::set_global_default(subscriber).context("Failed to set up logging")?;
 
-    // Ensure logs are flushed immediately
-    std::io::stderr().flush().ok();
-
     // Get the SSE URL from args or environment
     let sse_url = match args.sse_url {
-        Some(url) => url,
-        None => env::var("SSE_URL").context(
-            "Either the URL must be passed as the first argument or the SSE_URL environment variable must be set",
-        )?,
-    };
+          Some(url) => url,
+          None => env::var("SSE_URL").context(
+              "Either the URL must be passed as the first argument or the SSE_URL environment variable must be set",
+          )?,
+      };
 
     debug!("Starting MCP proxy with URL: {}", sse_url);
     debug!("Max disconnected time: {:?}s", args.max_disconnected_time);
-    debug!("Receive timeout: {}ms", args.receive_timeout);
 
-    info!("Starting MCP proxy");
-    proxy::start_proxy(sse_url, args.max_disconnected_time, args.receive_timeout).await
+    // Set up communication channels
+    let (reconnect_tx, mut reconnect_rx) = tokio::sync::mpsc::channel(10);
+    let (timer_tx, mut timer_rx) = tokio::sync::mpsc::channel(10);
+
+    // Initialize application state
+    let mut app_state = AppState::new(sse_url.clone(), args.max_disconnected_time);
+    // Pass channel senders to state
+    app_state.reconnect_tx = Some(reconnect_tx.clone());
+    app_state.timer_tx = Some(timer_tx.clone());
+
+    // Establish initial SSE connection using the retry helper
+    info!("Attempting initial connection to {}...", sse_url);
+    let mut transport = connect_with_retry(&sse_url).await?;
+
+    info!("Connection established. Proxy operational.");
+    app_state.state = ProxyState::WaitingForClientInit;
+
+    let stdin = tokio::io::stdin();
+    let stdout = tokio::io::stdout();
+    let mut stdin_stream: StdinStream = FramedRead::new(stdin, StdinCodec::default());
+    let mut stdout_sink: StdoutSink = FramedWrite::new(stdout, StdoutCodec::default());
+
+    info!("Connected to SSE endpoint, starting proxy");
+
+    // Set up heartbeat interval
+    let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(1));
+
+    // Main event loop
+    loop {
+        tokio::select! {
+            // Bias select towards checking cheaper/more frequent events first if needed,
+            // but default Tokio select is fair.
+            biased;
+            // Handle message from stdin
+            msg = stdin_stream.next() => {
+                if !app_state.handle_stdin_message(msg, &mut transport, &mut stdout_sink).await? {
+                    break;
+                }
+            }
+            // Handle message from SSE server
+            result = transport.next(), if app_state.transport_valid => {
+                if !app_state.handle_sse_message(result, &mut transport, &mut stdout_sink).await? {
+                    break;
+                }
+            }
+            // Handle reconnect signal
+            Some(_) = reconnect_rx.recv() => {
+                // Call method on app_state
+                if let Some(new_transport) = app_state.handle_reconnect_signal(&mut stdout_sink).await? {
+                    transport = new_transport;
+                }
+                // Check if disconnected too long *after* attempting reconnect
+                if app_state.disconnected_too_long() {
+                    error!("Giving up after failed reconnection attempts and exceeding max disconnected time.");
+                    // Ensure buffer is flushed if not already done by handle_reconnect_signal
+                    if !app_state.in_buf.is_empty() && app_state.buf_mode == state::BufferMode::Store {
+                        flush_buffer_with_errors(&mut app_state, &mut stdout_sink).await?;
+                    }
+                    break;
+                }
+            }
+            // Handle flush timer signal
+            Some(_) = timer_rx.recv() => app_state.handle_timer_signal(&mut stdout_sink).await?,
+            // Handle heartbeat tick
+            _ = heartbeat_interval.tick() => app_state.handle_heartbeat_tick(&mut transport).await?,
+            // Exit if no events are ready (shouldn't happen with interval timers unless others close)
+            else => break,
+        }
+    }
+
+    info!("Proxy terminated");
+    Ok(())
 }

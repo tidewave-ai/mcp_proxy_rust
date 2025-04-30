@@ -9,7 +9,7 @@ use rmcp::{
 use std::{net::SocketAddr, time::Duration};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    time::sleep,
+    time::{sleep, timeout},
 };
 
 // Creates a new SSE server for testing
@@ -123,7 +123,6 @@ async fn test_protocol_initialization() -> Result<()> {
 
 #[tokio::test]
 async fn test_reconnection_handling() -> Result<()> {
-    // Set up custom logger for this test to clearly see what's happening
     let subscriber = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .with_test_writer()
@@ -263,5 +262,121 @@ async fn test_server_info_and_capabilities() -> Result<()> {
     drop(client);
     server_handle.cancel();
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_initial_connection_retry() -> Result<()> {
+    // Set up custom logger for this test to clearly see what's happening
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_test_writer()
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    const BIND_ADDRESS: &str = "127.0.0.1:8184";
+    let server_url = format!("http://{}/sse", BIND_ADDRESS);
+    let bind_addr: SocketAddr = BIND_ADDRESS.parse()?;
+
+    // 1. Start the proxy process BEFORE the server
+    println!("Test: Starting proxy process...");
+    let mut cmd = tokio::process::Command::new("cargo");
+    cmd.arg("run")
+        .arg("--")
+        .arg(&server_url)
+        .stdout(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::piped());
+    let mut child = cmd.spawn()?;
+
+    // Get stdin and stdout handles
+    let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let mut reader = BufReader::new(stdout);
+
+    // 2. Wait for slightly longer than the proxy's retry delay
+    // This ensures the proxy has attempted connection at least once and is retrying.
+    let retry_wait = Duration::from_secs(6);
+    println!(
+        "Test: Waiting {:?} for proxy to attempt connection...",
+        retry_wait
+    );
+    sleep(retry_wait).await;
+
+    // Send initialize message WHILE proxy is still trying to connect
+    // (it will be buffered by the OS pipe until proxy reads stdin)
+    println!("Test: Sending initialize request (before server starts)...");
+    let init_message = r#"{"jsonrpc":"2.0","id":"init-retry","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"retry-test","version":"0.1.0"}}}"#;
+    stdin.write_all(init_message.as_bytes()).await?;
+    stdin.write_all(b"\n").await?;
+
+    // 3. Start the SSE server AFTER the wait and AFTER sending init
+    println!("Test: Starting SSE server on {}", BIND_ADDRESS);
+    let (server_handle, returned_url) = create_sse_server(bind_addr).await?;
+    assert_eq!(server_url, returned_url, "Server URL mismatch");
+
+    // 4. Proceed with initialization handshake (Proxy should now process buffered init)
+    // Read the initialize response (with a timeout)
+    println!("Test: Waiting for initialize response...");
+    let mut init_response = String::new();
+    match timeout(
+        Duration::from_secs(10),
+        reader.read_line(&mut init_response),
+    )
+    .await
+    {
+        Ok(Ok(_)) => {
+            println!(
+                "Test: Received initialize response: {}",
+                init_response.trim()
+            );
+            assert!(
+                init_response.contains("\"id\":\"init-retry\""),
+                "Init response missing correct ID"
+            );
+            assert!(
+                init_response.contains("\"result\""),
+                "Init response missing result"
+            );
+        }
+        Ok(Err(e)) => return Err(anyhow::anyhow!("Error reading init response: {}", e)),
+        Err(_) => return Err(anyhow::anyhow!("Timed out waiting for init response")),
+    }
+
+    println!("Test: Sending initialized notification...");
+    let initialized_message = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+    stdin.write_all(initialized_message.as_bytes()).await?;
+    stdin.write_all(b"\n").await?;
+
+    // 5. Test basic functionality (e.g., echo tool call)
+    println!("Test: Sending echo request...");
+    let echo_call = r#"{"jsonrpc":"2.0","id":"call-retry","method":"tools/call","params":{"name":"echo","arguments":{"message":"Hello after initial retry!"}}}"#;
+    stdin.write_all(echo_call.as_bytes()).await?;
+    stdin.write_all(b"\n").await?;
+
+    println!("Test: Waiting for echo response...");
+    let mut echo_response = String::new();
+    match timeout(Duration::from_secs(5), reader.read_line(&mut echo_response)).await {
+        Ok(Ok(_)) => {
+            println!("Test: Received echo response: {}", echo_response.trim());
+            assert!(
+                echo_response.contains("\"id\":\"call-retry\""),
+                "Echo response missing correct ID"
+            );
+            assert!(
+                echo_response.contains("Hello after initial retry!"),
+                "Echo response missing correct message"
+            );
+        }
+        Ok(Err(e)) => return Err(anyhow::anyhow!("Error reading echo response: {}", e)),
+        Err(_) => return Err(anyhow::anyhow!("Timed out waiting for echo response")),
+    }
+
+    // 6. Cleanup
+    println!("Test: Cleaning up...");
+    child.kill().await?;
+    server_handle.cancel();
+    sleep(Duration::from_millis(500)).await; // Give server time to shutdown
+
+    println!("Test: Completed successfully");
     Ok(())
 }
