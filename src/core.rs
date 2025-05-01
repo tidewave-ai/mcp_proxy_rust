@@ -30,7 +30,7 @@ pub(crate) async fn reply_disconnected(id: &RequestId, stdout_sink: &mut StdoutS
     );
 
     if let Err(e) = stdout_sink.send(error_response).await {
-        info!("Error writing disconnected error response to stdout: {}", e);
+        error!("Error writing disconnected error response to stdout: {}", e);
     }
 
     Ok(())
@@ -66,7 +66,7 @@ pub(crate) async fn try_reconnect(
             Ok(new_transport)
         }
         Err(e) => {
-            info!("Failed to reconnect: {}", e);
+            error!("Failed to reconnect: {}", e);
             Err(ReconnectFailureReason::ConnectionFailed(e.into()))
         }
     }
@@ -85,7 +85,7 @@ pub(crate) async fn send_request_to_sse(
     match transport.send(request.clone()).await {
         Ok(_) => Ok(true),
         Err(e) => {
-            info!("Error sending to SSE: {}", e);
+            error!("Error sending to SSE: {}", e);
             app_state.disconnected();
 
             if app_state.buf_mode == BufferMode::Store {
@@ -103,7 +103,7 @@ pub(crate) async fn send_request_to_sse(
                     original_id,
                 );
                 if let Err(write_err) = stdout_sink.send(error_response).await {
-                    info!("Error writing error response to stdout: {}", write_err);
+                    error!("Error writing error response to stdout: {}", write_err);
                 }
             }
             Ok(false)
@@ -132,7 +132,7 @@ pub(crate) async fn process_client_request(
                     req.id.clone(),
                 );
                 if let Err(e) = stdout_sink.send(response).await {
-                    info!("Error sending direct ping response to stdout: {}", e);
+                    error!("Error sending direct ping response to stdout: {}", e);
                 }
                 return Ok(());
             }
@@ -178,7 +178,7 @@ pub(crate) async fn process_client_request(
     // Send other message types (Notifications, mapped Responses/Errors)
     debug!("Forwarding message from stdin to SSE: {:?}", message);
     if let Err(e) = transport.send(message).await {
-        info!("Error sending message to SSE: {}", e);
+        error!("Error sending message to SSE: {}", e);
         app_state.handle_fatal_transport_error();
     }
 
@@ -205,7 +205,7 @@ pub(crate) async fn process_buffered_messages(
                 app_state.id_map.insert(new_id, request_id.clone());
 
                 if let Err(e) = transport.send(ClientJsonRpcMessage::Request(req)).await {
-                    info!("Error sending buffered request: {}", e);
+                    error!("Error sending buffered request: {}", e);
                     let error_response = ServerJsonRpcMessage::error(
                         ErrorData::new(
                             TRANSPORT_SEND_ERROR_CODE,
@@ -215,14 +215,14 @@ pub(crate) async fn process_buffered_messages(
                         request_id,
                     );
                     if let Err(write_err) = stdout_sink.send(error_response).await {
-                        info!("Error writing error response to stdout: {}", write_err);
+                        error!("Error writing error response to stdout: {}", write_err);
                     }
                 }
             }
             _ => {
                 // Notifications etc.
                 if let Err(e) = transport.send(message.clone()).await {
-                    info!("Error sending buffered message: {}", e);
+                    error!("Error sending buffered message: {}", e);
                     // If sending a buffered notification fails, we probably just log it.
                     // Triggering another disconnect cycle might be excessive.
                 }

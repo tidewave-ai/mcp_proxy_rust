@@ -218,7 +218,7 @@ impl AppState {
                 Ok(true)
             }
             Some(Err(e)) => {
-                info!("Error reading from stdin: {}", e);
+                error!("Error reading from stdin: {}", e);
                 Ok(false)
             }
             None => {
@@ -286,7 +286,7 @@ impl AppState {
                                 ),
                             );
                             if let Err(e) = transport.send(initialized_notification).await {
-                                info!(
+                                error!(
                                     "Error sending initialized notification post-reconnect: {}",
                                     e
                                 );
@@ -318,14 +318,14 @@ impl AppState {
                 // This now handles mapped server requests, mapped responses/errors, and notifications
                 debug!("Forwarding from SSE to stdout: {:?}", message);
                 if let Err(e) = stdout_sink.send(message).await {
-                    info!("Error writing to stdout: {}", e);
+                    error!("Error writing to stdout: {}", e);
                     return Ok(false);
                 }
 
                 Ok(true)
             }
             None => {
-                info!("SSE stream ended (Fatal error in transport)");
+                debug!("SSE stream ended (Fatal error in transport) - trying to reconnect");
                 self.handle_fatal_transport_error();
                 Ok(true)
             }
@@ -414,7 +414,7 @@ impl AppState {
                     self.update_heartbeat();
                 }
                 Some(false) => {
-                    info!("Heartbeat check failed - connection confirmed down");
+                    debug!("Heartbeat check failed - connection confirmed down");
                     self.handle_fatal_transport_error();
                 }
                 None => {}
@@ -443,7 +443,7 @@ impl AppState {
         if is_response_or_error {
             if let Some(current_id) = id_to_check {
                 if let Some(original_id) = self.lookup_and_remove_original_id(&current_id) {
-                    info!(
+                    debug!(
                         "Mapping client message ID {} back to original server ID: {}",
                         current_id, original_id
                     );
@@ -494,7 +494,7 @@ impl AppState {
         if is_response_or_error {
             if let Some(current_id) = id_to_check {
                 if let Some(original_id) = self.lookup_and_remove_original_id(&current_id) {
-                    info!(
+                    debug!(
                         "Mapping server message ID {} back to original client ID: {}",
                         current_id, original_id
                     );
