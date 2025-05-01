@@ -5,6 +5,8 @@ on:
     branches:
       # Always run on main branch.
       - main
+    pull_request:
+      branches: [ "main" ]
     tags:
       - '*'
   workflow_dispatch:

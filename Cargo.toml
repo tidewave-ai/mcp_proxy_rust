@@ -4,28 +4,28 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk.git", rev = "18346b94e4e71463a06d93852cfc26c683ca5b83", features = ["server", "client", "transport-sse-server", "transport-child-process", "macros"] }
+rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk.git", rev = "18346b94e4e71463a06d93852cfc26c683ca5b83", features = ["server", "client", "transport-sse", "transport-child-process", "macros"] }
 clap = { version = "4.5.37", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 anyhow = "1.0.98"
 uuid = { version = "1.6", features = ["v7", "fast-rng"] }
 bytes = "1.0"
-reqwest = { version = "0.12", features = ["json", "stream"] }
-hyper = { version = "0.14", features = ["stream"] }
 futures = "0.3.31"
 url = "2.5.4"
+tokio-util = "0.7.15"
+reqwest = { version = "0.12", features = ["json", "stream"] }
 
 [dependencies.openssl-sys]
 version = "0.9"
 features = ["vendored"]
 
 [dev-dependencies]
+rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk.git", rev = "18346b94e4e71463a06d93852cfc26c683ca5b83", features = ["server", "client", "transport-sse", "transport-sse-server", "transport-child-process", "macros"] }
 axum = { version = "0.8", features = ["macros"] }
-tokio-util = "0.7.15"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 [profile.release]
 opt-level = 3
