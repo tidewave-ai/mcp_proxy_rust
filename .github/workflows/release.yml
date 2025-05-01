@@ -66,5 +66,6 @@ jobs:
         uses: houseabsolute/actions-rust-release@48ce35fb40c3dab00791a3d6c485022341354c44
         with:
           executable-name: mcp-proxy
+          extra-files: ''
           changes-file: ''
           target: ${{ matrix.platform.target }}
