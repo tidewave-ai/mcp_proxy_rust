@@ -71,4 +71,3 @@ You will also need to know the location of the `escript` executable, so run `whi
 Other supported flags:
 
 * `--max-disconnected-time` the maximum amount of time for trying to reconnect while disconnected. When not set, defaults to infinity.
-* `--receive-timeout` the maximum amount of time to wait for an individual reply from the MCP server in milliseconds. Defaults to 60000 (60 seconds).
