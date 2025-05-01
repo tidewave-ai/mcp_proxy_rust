@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk.git", rev = "18346b94e4e71463a06d93852cfc26c683ca5b83", features = ["server", "client", "transport-sse", "transport-child-process", "macros"] }
+rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk.git", rev = "18346b94e4e71463a06d93852cfc26c683ca5b83", features = ["server", "client", "transport-sse", "transport-child-process"] }
 clap = { version = "4.5.37", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1.41"
