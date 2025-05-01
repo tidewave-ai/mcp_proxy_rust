@@ -14,10 +14,7 @@ async fn test_proxy_connects_to_real_server() -> anyhow::Result<()> {
         .with_service(echo::Echo::default);
 
     let transport = TokioChildProcess::new(
-        tokio::process::Command::new("cargo")
-            .arg("run")
-            .arg("--")
-            .arg(TEST_SERVER_URL),
+        tokio::process::Command::new("./target/debug/mcp-proxy").arg(TEST_SERVER_URL),
     )?;
 
     let client = ().serve(transport).await?;

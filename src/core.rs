@@ -3,7 +3,10 @@ use crate::{DISCONNECTED_ERROR_CODE, SseClientTransport, StdoutSink, TRANSPORT_S
 use anyhow::Result;
 use futures::{FutureExt, SinkExt, StreamExt};
 use rmcp::{
-    model::{ClientJsonRpcMessage, ErrorData, RequestId, ServerJsonRpcMessage},
+    model::{
+        ClientJsonRpcMessage, ClientRequest, EmptyResult, ErrorData, RequestId,
+        ServerJsonRpcMessage,
+    },
     transport::sse::{ReqwestSseClient, SseTransport, SseTransportRetryConfig},
 };
 use std::time::Duration;
@@ -116,6 +119,26 @@ pub(crate) async fn process_client_request(
     transport: &mut SseClientTransport,
     stdout_sink: &mut StdoutSink,
 ) -> Result<()> {
+    // Handle ping directly if disconnected
+    if let ClientJsonRpcMessage::Request(ref req) = message {
+        if let ClientRequest::PingRequest(_) = &req.request {
+            if app_state.state == ProxyState::Disconnected {
+                debug!(
+                    "Received Ping request while disconnected, replying directly: {:?}",
+                    req.id
+                );
+                let response = ServerJsonRpcMessage::response(
+                    rmcp::model::ServerResult::EmptyResult(EmptyResult {}),
+                    req.id.clone(),
+                );
+                if let Err(e) = stdout_sink.send(response).await {
+                    info!("Error sending direct ping response to stdout: {}", e);
+                }
+                return Ok(());
+            }
+        }
+    }
+
     // Try mapping the ID first (for Response/Error cases).
     // If it returns None, the ID was unknown, so we skip processing/forwarding.
     let message = match app_state.map_client_response_error_id(message) {

@@ -69,10 +69,8 @@ async fn test_protocol_initialization() -> Result<()> {
     let (server_handle, server_url) = create_sse_server(BIND_ADDRESS.parse()?).await?;
 
     // Create a child process for the proxy
-    let mut cmd = tokio::process::Command::new("cargo");
-    cmd.arg("run")
-        .arg("--")
-        .arg(&server_url)
+    let mut cmd = tokio::process::Command::new("./target/debug/mcp-proxy");
+    cmd.arg(&server_url)
         .stdout(std::process::Stdio::piped())
         .stdin(std::process::Stdio::piped());
 
@@ -137,10 +135,8 @@ async fn test_reconnection_handling() -> Result<()> {
 
     // Create a child process for the proxy
     println!("Test: Creating proxy process");
-    let mut cmd = tokio::process::Command::new("cargo");
-    cmd.arg("run")
-        .arg("--")
-        .arg(&server_url)
+    let mut cmd = tokio::process::Command::new("./target/debug/mcp-proxy");
+    cmd.arg(&server_url)
         .stdout(std::process::Stdio::piped())
         .stdin(std::process::Stdio::piped());
 
@@ -225,10 +221,7 @@ async fn test_server_info_and_capabilities() -> Result<()> {
 
     // Create a transport for the proxy
     let transport = TokioChildProcess::new(
-        tokio::process::Command::new("cargo")
-            .arg("run")
-            .arg("--")
-            .arg(&server_url),
+        tokio::process::Command::new("./target/debug/mcp-proxy").arg(&server_url),
     )?;
 
     // Connect a client to the proxy
@@ -280,10 +273,8 @@ async fn test_initial_connection_retry() -> Result<()> {
 
     // 1. Start the proxy process BEFORE the server
     println!("Test: Starting proxy process...");
-    let mut cmd = tokio::process::Command::new("cargo");
-    cmd.arg("run")
-        .arg("--")
-        .arg(&server_url)
+    let mut cmd = tokio::process::Command::new("./target/debug/mcp-proxy");
+    cmd.arg(&server_url)
         .arg("--initial-retry-interval")
         .arg("1")
         .stdout(std::process::Stdio::piped())
@@ -297,7 +288,7 @@ async fn test_initial_connection_retry() -> Result<()> {
 
     // 2. Wait for slightly longer than the proxy's retry delay
     // This ensures the proxy has attempted connection at least once and is retrying.
-    let retry_wait = Duration::from_secs(6);
+    let retry_wait = Duration::from_secs(2);
     println!(
         "Test: Waiting {:?} for proxy to attempt connection...",
         retry_wait
@@ -380,5 +371,104 @@ async fn test_initial_connection_retry() -> Result<()> {
     sleep(Duration::from_millis(500)).await; // Give server time to shutdown
 
     println!("Test: Completed successfully");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_ping_when_disconnected() -> Result<()> {
+    const BIND_ADDRESS: &str = "127.0.0.1:8185";
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_test_writer()
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    // 1. Start the SSE server
+    tracing::info!("Test: Starting SSE server for ping test");
+    let (server_handle, server_url) = create_sse_server(BIND_ADDRESS.parse()?).await?;
+
+    // Create a child process for the proxy
+    tracing::info!("Test: Creating proxy process");
+    let mut cmd = tokio::process::Command::new("./target/debug/mcp-proxy");
+    cmd.arg(&server_url)
+        .arg("--debug")
+        .stdout(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::piped());
+
+    let mut child = cmd.spawn()?;
+
+    // Get stdin and stdout handles
+    let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let mut reader = BufReader::new(stdout);
+
+    // 2. Initializes everything
+    let init_message = r#"{"jsonrpc":"2.0","id":"init-ping","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ping-test","version":"0.1.0"}}}"#;
+    tracing::info!("Test: Sending initialize request");
+    stdin.write_all(init_message.as_bytes()).await?;
+    stdin.write_all(b"\n").await?;
+
+    // Read the initialize response
+    let mut init_response = String::new();
+    match timeout(
+        Duration::from_secs(15),
+        reader.read_line(&mut init_response),
+    )
+    .await
+    {
+        Ok(Ok(_)) => {
+            tracing::info!(
+                "Test: Received initialize response: {}",
+                init_response.trim()
+            );
+            assert!(init_response.contains("\"id\":\"init-ping\""));
+        }
+        Ok(Err(e)) => panic!("Failed to read init response: {}", e),
+        Err(_) => panic!("Timed out waiting for init response"),
+    }
+
+    // Send initialized notification
+    let initialized_message = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+    tracing::info!("Test: Sending initialized notification");
+    stdin.write_all(initialized_message.as_bytes()).await?;
+    stdin.write_all(b"\n").await?;
+    // Allow time for proxy to process initialized and potentially send buffered msgs (if any)
+    sleep(Duration::from_millis(100)).await;
+
+    // 3. Kills the SSE server
+    tracing::info!("Test: Shutting down SSE server");
+    server_handle.cancel();
+    // Give the server time to shut down and the proxy time to notice
+    sleep(Duration::from_secs(2)).await;
+
+    // 4. Sends a ping request
+    let ping_message = r#"{"jsonrpc":"2.0","id":"ping-1","method":"ping"}"#;
+    tracing::info!("Test: Sending ping request while server is down");
+    stdin.write_all(ping_message.as_bytes()).await?;
+    stdin.write_all(b"\n").await?;
+
+    // 5. Checks that it receives a response
+    let mut ping_response = String::new();
+    match timeout(Duration::from_secs(2), reader.read_line(&mut ping_response)).await {
+        Ok(Ok(_)) => {
+            tracing::info!("Test: Received ping response: {}", ping_response.trim());
+            // Expecting: {"jsonrpc":"2.0","id":"ping-1","result":{}}
+            assert!(
+                ping_response.contains("\"id\":\"ping-1\""),
+                "Response ID mismatch"
+            );
+            assert!(
+                ping_response.contains("\"result\":{}"),
+                "Expected empty result object"
+            );
+        }
+        Ok(Err(e)) => panic!("Failed to read ping response: {}", e),
+        Err(_) => panic!("Timed out waiting for ping response"),
+    }
+
+    // Clean up
+    tracing::info!("Test: Cleaning up proxy process");
+    child.kill().await?;
+
     Ok(())
 }
