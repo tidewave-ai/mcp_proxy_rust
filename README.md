@@ -11,7 +11,7 @@ Note that these binaries are not notarized. On macOS, you won't be able to run t
 a web browser. You can circumvent the quarantine by directly downloading the file using curl, for example:
 
 ```bash
-$ curl -sL https://github.com/tidewave-ai/mcp_proxy_rust/releases/download/v0.1.0/mcp-proxy-macOS-arm64.tar.gz | tar xv
+$ curl -sL https://github.com/tidewave-ai/mcp_proxy_rust/releases/download/v0.1.1/mcp-proxy-x86_64-apple-darwin.tar.gz | tar xv
 ```
 
 Alternatively, remove the quarantine flag:
