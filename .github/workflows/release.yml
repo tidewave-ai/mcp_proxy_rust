@@ -62,10 +62,20 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: "--locked --release"
           strip: true
-      - name: Publish artifacts and release
-        uses: houseabsolute/actions-rust-release@48ce35fb40c3dab00791a3d6c485022341354c44
+      - name: Create archive (Unix)
+        if: matrix.platform.os-name != 'Windows-x86_64'
+        run: tar -czvf mcp-proxy-${{ matrix.platform.target }}.tar.gz -C target/*/release mcp-proxy
+      - name: Create archive (Windows)
+        if: matrix.platform.os-name == 'Windows-x86_64'
+        working-directory: target\\${{ matrix.platform.target }}\\release
+        run: 7z a ..\\..\\..\\mcp-proxy-${{ matrix.platform.target }}.zip mcp-proxy.exe
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
         with:
-          executable-name: mcp-proxy
-          extra-files: ''
-          changes-file: ''
-          target: ${{ matrix.platform.target }}
+          name: mcp-proxy-${{ matrix.platform.target }}
+          path: mcp-proxy-${{ matrix.platform.target }}.*
+      - name: Release
+        uses: softprops/action-gh-release@39ba0b9d81217c984acfad95ddcc7db226387497
+        if: github.ref_type == 'tag'
+        with:
+          files: 'mcp-proxy-${{ matrix.platform.target }}.*'
