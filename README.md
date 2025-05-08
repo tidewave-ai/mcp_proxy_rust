@@ -41,13 +41,13 @@ You can download the latest release from the [Releases page](https://github.com/
 x86:
 
 ```bash
-$ curl -sL https://github.com/tidewave-ai/mcp_proxy_rust/releases/latest/download/mcp-proxy-x86_64-unknown-linux-musl.tar.gz | tar xv
+$ curl -sL https://github.com/tidewave-ai/mcp_proxy_rust/releases/latest/download/mcp-proxy-x86_64-unknown-linux-musl.tar.gz | tar zxv
 ```
 
 arm64 / aarch64:
 
 ```bash
-$ curl -sL https://github.com/tidewave-ai/mcp_proxy_rust/releases/latest/download/mcp-proxy-aarch64-unknown-linux-musl.tar.gz | tar xv
+$ curl -sL https://github.com/tidewave-ai/mcp_proxy_rust/releases/latest/download/mcp-proxy-aarch64-unknown-linux-musl.tar.gz | tar zxv
 ```
 
 ### Windows
