@@ -6,11 +6,102 @@ use rmcp::{
     object,
     transport::{ConfigureCommandExt, TokioChildProcess},
 };
-use std::{net::SocketAddr, time::Duration};
+use std::{
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     time::{sleep, timeout},
 };
+
+/// A guard that ensures processes are killed on drop, especially on test failures (panics)
+struct TestGuard {
+    child: Option<tokio::process::Child>,
+    server_handle: Option<tokio::process::Child>,
+    stderr_buffer: Arc<Mutex<Vec<String>>>,
+}
+
+impl TestGuard {
+    fn new(
+        child: tokio::process::Child,
+        server_handle: tokio::process::Child,
+        stderr_buffer: Arc<Mutex<Vec<String>>>,
+    ) -> Self {
+        Self {
+            child: Some(child),
+            server_handle: Some(server_handle),
+            stderr_buffer,
+        }
+    }
+}
+
+impl Drop for TestGuard {
+    fn drop(&mut self) {
+        // If we're dropping because of a panic, print the stderr content
+        if std::thread::panicking() {
+            eprintln!("Test failed! Process stderr output:");
+            for line in self.stderr_buffer.lock().unwrap().iter() {
+                eprintln!("{}", line);
+            }
+        }
+
+        // Force kill both processes
+        if let Some(mut child) = self.child.take() {
+            let _ = child.start_kill();
+        }
+        if let Some(mut server_handle) = self.server_handle.take() {
+            let _ = server_handle.start_kill();
+        }
+    }
+}
+
+/// Spawns a proxy process with stdin, stdout, and stderr all captured
+async fn spawn_proxy(
+    server_url: &str,
+    extra_args: Vec<&str>,
+) -> Result<(
+    tokio::process::Child,
+    tokio::io::BufReader<tokio::process::ChildStdout>,
+    tokio::io::BufReader<tokio::process::ChildStderr>,
+    tokio::process::ChildStdin,
+)> {
+    let mut cmd = tokio::process::Command::new("./target/debug/mcp-proxy");
+    cmd.arg(server_url)
+        .args(extra_args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::piped());
+
+    let mut child = cmd.spawn()?;
+    let stdin = child.stdin.take().unwrap();
+    let stdout = BufReader::new(child.stdout.take().unwrap());
+    let stderr = BufReader::new(child.stderr.take().unwrap());
+
+    Ok((child, stdout, stderr, stdin))
+}
+
+/// Collects stderr lines in the background
+fn collect_stderr(
+    mut stderr_reader: BufReader<tokio::process::ChildStderr>,
+) -> Arc<Mutex<Vec<String>>> {
+    let stderr_buffer = Arc::new(Mutex::new(Vec::new()));
+    let buffer_clone = stderr_buffer.clone();
+
+    tokio::spawn(async move {
+        let mut line = String::new();
+        while let Ok(bytes_read) = stderr_reader.read_line(&mut line).await {
+            if bytes_read == 0 {
+                break;
+            }
+            buffer_clone.lock().unwrap().push(line.clone());
+            line.clear();
+        }
+    });
+
+    stderr_buffer
+}
 
 // Creates a new SSE server for testing
 // Starts the echo-server as a subprocess
@@ -32,12 +123,14 @@ async fn create_sse_server(
 
     tracing::debug!("cmd: {:?}", cmd);
 
-    // Start the process
-    let child = cmd.spawn()?;
+    // Start the process with stdout/stderr redirected to null
+    let child = cmd
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
 
     // Give the server time to start up
     sleep(Duration::from_millis(500)).await;
-
     tracing::info!("{} server started successfully", server_name);
 
     Ok((child, url))
@@ -45,22 +138,12 @@ async fn create_sse_server(
 
 async fn protocol_initialization(server_name: &str) -> Result<()> {
     const BIND_ADDRESS: &str = "127.0.0.1:8181";
-    // Start the SSE server
-    let (mut server_handle, server_url) =
-        create_sse_server(server_name, BIND_ADDRESS.parse()?).await?;
+    let (server_handle, server_url) = create_sse_server(server_name, BIND_ADDRESS.parse()?).await?;
 
-    // Create a child process for the proxy
-    let mut cmd = tokio::process::Command::new("./target/debug/mcp-proxy");
-    cmd.arg(&server_url)
-        .stdout(std::process::Stdio::piped())
-        .stdin(std::process::Stdio::piped());
-
-    let mut child = cmd.spawn()?;
-
-    // Get stdin and stdout handles
-    let mut stdin = child.stdin.take().unwrap();
-    let stdout = child.stdout.take().unwrap();
-    let mut reader = BufReader::new(stdout);
+    // Create a child process for the proxy with stderr capture
+    let (child, mut reader, stderr_reader, mut stdin) = spawn_proxy(&server_url, vec![]).await?;
+    let stderr_buffer = collect_stderr(stderr_reader);
+    let _guard = TestGuard::new(child, server_handle, stderr_buffer);
 
     // Send initialization message
     let init_message = r#"{"jsonrpc":"2.0","id":"init-1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}"#;
@@ -93,10 +176,6 @@ async fn protocol_initialization(server_name: &str) -> Result<()> {
     assert!(echo_response.contains("\"id\":\"call-1\""));
     assert!(echo_response.contains("Hey!"));
 
-    // Clean up
-    child.kill().await?;
-    server_handle.kill().await?;
-
     Ok(())
 }
 
@@ -119,22 +198,13 @@ async fn reconnection_handling(server_name: &str) -> Result<()> {
 
     // Start the SSE server
     tracing::info!("Test: Starting initial SSE server");
-    let (mut server_handle, server_url) =
-        create_sse_server(server_name, BIND_ADDRESS.parse()?).await?;
+    let (server_handle, server_url) = create_sse_server(server_name, BIND_ADDRESS.parse()?).await?;
 
     // Create a child process for the proxy
     tracing::info!("Test: Creating proxy process");
-    let mut cmd = tokio::process::Command::new("./target/debug/mcp-proxy");
-    cmd.arg(&server_url)
-        .stdout(std::process::Stdio::piped())
-        .stdin(std::process::Stdio::piped());
-
-    let mut child = cmd.spawn()?;
-
-    // Get stdin and stdout handles
-    let mut stdin = child.stdin.take().unwrap();
-    let stdout = child.stdout.take().unwrap();
-    let mut reader = BufReader::new(stdout);
+    let (child, mut reader, stderr_reader, mut stdin) = spawn_proxy(&server_url, vec![]).await?;
+    let stderr_buffer = collect_stderr(stderr_reader);
+    let mut test_guard = TestGuard::new(child, server_handle, stderr_buffer);
 
     // Send initialization message
     let init_message = r#"{"jsonrpc":"2.0","id":"init-1","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}"#;
@@ -163,19 +233,24 @@ async fn reconnection_handling(server_name: &str) -> Result<()> {
     );
 
     // Shutdown the server
-    server_handle.kill().await?;
+    if let Some(mut server) = test_guard.server_handle.take() {
+        server.kill().await?;
+    }
 
     // Give the server time to shut down
     sleep(Duration::from_millis(1000)).await;
 
     // Create a new server on the same address
     tracing::info!("Test: Starting new SSE server");
-    let (mut server_handle, new_url) =
+    let (new_server_handle, new_url) =
         create_sse_server(server_name, BIND_ADDRESS.parse()?).await?;
     assert_eq!(
         server_url, new_url,
         "New server URL should match the original"
     );
+
+    // Update the test guard with the new server handle
+    test_guard.server_handle = Some(new_server_handle);
 
     // Give the proxy time to reconnect
     sleep(Duration::from_millis(3000)).await;
@@ -196,11 +271,6 @@ async fn reconnection_handling(server_name: &str) -> Result<()> {
         echo_response.contains("\"id\":\"call-2\""),
         "No response received after reconnection"
     );
-
-    // Clean up
-    server_handle.kill().await?;
-    sleep(Duration::from_millis(500)).await; // Give server time to shutdown
-    child.kill().await?;
 
     Ok(())
 }
@@ -286,18 +356,10 @@ async fn initial_connection_retry(server_name: &str) -> Result<()> {
 
     // 1. Start the proxy process BEFORE the server
     tracing::info!("Test: Starting proxy process...");
-    let mut cmd = tokio::process::Command::new("./target/debug/mcp-proxy");
-    cmd.arg(&server_url)
-        .arg("--initial-retry-interval")
-        .arg("1")
-        .stdout(std::process::Stdio::piped())
-        .stdin(std::process::Stdio::piped());
-    let mut child = cmd.spawn()?;
+    let (child, mut reader, stderr_reader, mut stdin) =
+        spawn_proxy(&server_url, vec!["--initial-retry-interval", "1"]).await?;
 
-    // Get stdin and stdout handles
-    let mut stdin = child.stdin.take().unwrap();
-    let stdout = child.stdout.take().unwrap();
-    let mut reader = BufReader::new(stdout);
+    let stderr_buffer = collect_stderr(stderr_reader);
 
     // 2. Wait for slightly longer than the proxy's retry delay
     // This ensures the proxy has attempted connection at least once and is retrying.
@@ -317,8 +379,10 @@ async fn initial_connection_retry(server_name: &str) -> Result<()> {
 
     // 3. Start the SSE server AFTER the wait and AFTER sending init
     tracing::info!("Test: Starting SSE server on {}", BIND_ADDRESS);
-    let (mut server_handle, returned_url) = create_sse_server(server_name, bind_addr).await?;
+    let (server_handle, returned_url) = create_sse_server(server_name, bind_addr).await?;
     assert_eq!(server_url, returned_url, "Server URL mismatch");
+
+    let _test_guard = TestGuard::new(child, server_handle, stderr_buffer);
 
     // 4. Proceed with initialization handshake (Proxy should now process buffered init)
     // Read the initialize response (with a timeout)
@@ -377,12 +441,6 @@ async fn initial_connection_retry(server_name: &str) -> Result<()> {
         Err(_) => return Err(anyhow::anyhow!("Timed out waiting for echo response")),
     }
 
-    // 6. Cleanup
-    tracing::info!("Test: Cleaning up...");
-    child.kill().await?;
-    server_handle.kill().await?;
-    sleep(Duration::from_millis(500)).await; // Give server time to shutdown
-
     tracing::info!("Test: Completed successfully");
     Ok(())
 }
@@ -405,23 +463,16 @@ async fn ping_when_disconnected(server_name: &str) -> Result<()> {
 
     // 1. Start the SSE server
     tracing::info!("Test: Starting SSE server for ping test");
-    let (mut server_handle, server_url) =
-        create_sse_server(server_name, BIND_ADDRESS.parse()?).await?;
+    let (server_handle, server_url) = create_sse_server(server_name, BIND_ADDRESS.parse()?).await?;
 
     // Create a child process for the proxy
     tracing::info!("Test: Creating proxy process");
-    let mut cmd = tokio::process::Command::new("./target/debug/mcp-proxy");
-    cmd.arg(&server_url)
-        .arg("--debug")
-        .stdout(std::process::Stdio::piped())
-        .stdin(std::process::Stdio::piped());
+    let (child, mut reader, stderr_reader, mut stdin) =
+        spawn_proxy(&server_url, vec!["--debug"]).await?;
 
-    let mut child = cmd.spawn()?;
+    let stderr_buffer = collect_stderr(stderr_reader);
 
-    // Get stdin and stdout handles
-    let mut stdin = child.stdin.take().unwrap();
-    let stdout = child.stdout.take().unwrap();
-    let mut reader = BufReader::new(stdout);
+    let mut test_guard = TestGuard::new(child, server_handle, stderr_buffer);
 
     // 2. Initializes everything
     let init_message = r#"{"jsonrpc":"2.0","id":"init-ping","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ping-test","version":"0.1.0"}}}"#;
@@ -453,7 +504,9 @@ async fn ping_when_disconnected(server_name: &str) -> Result<()> {
 
     // 3. Kills the SSE server
     tracing::info!("Test: Shutting down SSE server");
-    server_handle.kill().await?;
+    if let Some(mut server) = test_guard.server_handle.take() {
+        server.kill().await?;
+    }
     // Give the server time to shut down and the proxy time to notice
     sleep(Duration::from_secs(3)).await;
 
@@ -482,16 +535,12 @@ async fn ping_when_disconnected(server_name: &str) -> Result<()> {
         Err(_) => panic!("Timed out waiting for ping response"),
     }
 
-    // Clean up
-    tracing::info!("Test: Cleaning up proxy process");
-    child.kill().await?;
-
     Ok(())
 }
 
 #[tokio::test]
 async fn test_ping_when_disconnected() -> Result<()> {
-    // ping_when_disconnected("echo").await?;
+    ping_when_disconnected("echo").await?;
     ping_when_disconnected("echo_streamable").await?;
 
     Ok(())
