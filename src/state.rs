@@ -1,12 +1,13 @@
 use crate::core::{
     flush_buffer_with_errors, generate_id, initiate_post_reconnect_handshake,
-    process_buffered_messages, process_client_request, send_heartbeat_if_needed, try_reconnect,
+    process_buffered_messages, process_client_request, reply_disconnected,
+    send_heartbeat_if_needed, try_reconnect,
 };
-use crate::{SseClientTransport, StdoutSink};
+use crate::{SseClientType, StdoutSink};
 use anyhow::Result;
 use futures::SinkExt;
 use rmcp::model::{
-    ClientJsonRpcMessage, ClientNotification, ClientRequest, InitializedNotification,
+    ClientJsonRpcMessage, ClientNotification, ClientRequest, EmptyResult, InitializedNotification,
     InitializedNotificationMethod, RequestId, ServerJsonRpcMessage,
 };
 use std::collections::HashMap;
@@ -113,9 +114,9 @@ impl AppState {
             self.state = ProxyState::Disconnected;
             self.disconnected_since = Some(Instant::now());
             self.buf_mode = BufferMode::Store;
-            self.connect_tries += 1;
             self.transport_valid = false;
         }
+        self.connect_tries += 1;
     }
 
     pub fn disconnected_too_long(&self) -> bool {
@@ -181,39 +182,14 @@ impl AppState {
     /// Returns Ok(true) to continue processing, Ok(false) to break the main loop.
     pub(crate) async fn handle_stdin_message(
         &mut self,
-        msg: Option<Result<ClientJsonRpcMessage, rmcp::transport::io::JsonRpcMessageCodecError>>,
-        transport: &mut SseClientTransport,
+        msg: Option<
+            Result<ClientJsonRpcMessage, rmcp::transport::async_rw::JsonRpcMessageCodecError>,
+        >,
+        transport: &mut SseClientType,
         stdout_sink: &mut StdoutSink,
     ) -> Result<bool> {
         match msg {
             Some(Ok(message)) => {
-                match &message {
-                    ClientJsonRpcMessage::Request(req) => {
-                        if let ClientRequest::InitializeRequest(_) = req.request {
-                            debug!("Stored client initialization message");
-                            self.init_message = Some(message.clone());
-                            self.state = ProxyState::WaitingForServerInit(req.id.clone());
-                        }
-                    }
-                    ClientJsonRpcMessage::Notification(notification) => {
-                        if let ClientNotification::InitializedNotification(_) =
-                            notification.notification
-                        {
-                            if self.state == ProxyState::WaitingForClientInitialized {
-                                debug!(
-                                    "Received client initialized notification, proxy fully connected."
-                                );
-                                self.state = ProxyState::Connected;
-                            } else {
-                                debug!(
-                                    "Forwarding client initialized notification outside of expected state."
-                                );
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-
                 process_client_request(message, self, transport, stdout_sink).await?;
                 Ok(true)
             }
@@ -233,9 +209,10 @@ impl AppState {
     pub(crate) async fn handle_sse_message(
         &mut self,
         result: Option<ServerJsonRpcMessage>,
-        transport: &mut SseClientTransport,
+        transport: &mut SseClientType,
         stdout_sink: &mut StdoutSink,
     ) -> Result<bool> {
+        debug!("Received SSE message: {:?}", result);
         match result {
             Some(mut message) => {
                 self.update_heartbeat();
@@ -256,6 +233,10 @@ impl AppState {
                 }
                 // --- End Server-Initiated Request Handling ---
                 else {
+                    match self.map_server_response_error_id(message) {
+                        Some(mapped_message) => message = mapped_message,
+                        None => return Ok(true), // Skip forwarding this message
+                    }
                     // --- Handle Initialization Response --- (Only for Response/Error)
                     let is_init_response = match &message {
                         ServerJsonRpcMessage::Response(response) => match self.state {
@@ -271,11 +252,16 @@ impl AppState {
                         _ => false,
                     };
 
+                    debug!(
+                        "Handling initialization response - state: {:?}, message: {:?}, is_init_response: {}",
+                        self.state, message, is_init_response
+                    );
+
                     if is_init_response {
                         let was_hidden =
                             matches!(self.state, ProxyState::WaitingForServerInitHidden(_));
                         if was_hidden {
-                            self.state = ProxyState::Connected;
+                            self.connected();
                             debug!("Reconnection successful, received hidden init response");
                             let initialized_notification = ClientJsonRpcMessage::notification(
                                 ClientNotification::InitializedNotification(
@@ -294,24 +280,15 @@ impl AppState {
                             } else {
                                 process_buffered_messages(self, transport, stdout_sink).await?;
                             }
+                            return Ok(true); // Don't forward the init response
                         } else {
                             debug!(
                                 "Initial connection successful, received init response. Waiting for client initialized."
                             );
                             self.state = ProxyState::WaitingForClientInitialized;
                         }
-                        return Ok(true); // Don't forward the init response
                     }
                     // --- End Initialization Response Handling ---
-
-                    // --- Handle Regular Response/Error ID Mapping --- (Client->Server flow)
-                    // Map Response/Error back to original client ID if possible
-                    // If mapping fails (returns None), skip forwarding.
-                    match self.map_server_response_error_id(message) {
-                        Some(mapped_message) => message = mapped_message,
-                        None => return Ok(true), // Skip forwarding this message
-                    }
-                    // --- End Regular Response/Error ID Mapping ---
                 }
 
                 // Forward the (potentially modified) message to stdout
@@ -332,19 +309,54 @@ impl AppState {
         }
     }
 
+    pub(crate) async fn maybe_handle_message_while_disconnected(
+        &mut self,
+        message: ClientJsonRpcMessage,
+        stdout_sink: &mut StdoutSink,
+    ) -> Result<()> {
+        if self.state != ProxyState::Disconnected {
+            return Err(anyhow::anyhow!("Not disconnected"));
+        }
+
+        // Handle ping directly if disconnected
+        if let ClientJsonRpcMessage::Request(ref req) = message {
+            if let ClientRequest::PingRequest(_) = &req.request {
+                debug!(
+                    "Received Ping request while disconnected, replying directly: {:?}",
+                    req.id
+                );
+                let response = ServerJsonRpcMessage::response(
+                    rmcp::model::ServerResult::EmptyResult(EmptyResult {}),
+                    req.id.clone(),
+                );
+                if let Err(e) = stdout_sink.send(response).await {
+                    error!("Error sending direct ping response to stdout: {}", e);
+                }
+                return Ok(());
+            }
+            if self.buf_mode == BufferMode::Store {
+                debug!("Buffering request for later retry");
+                self.in_buf.push(message);
+            } else {
+                reply_disconnected(&req.id, stdout_sink).await?;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Handles the reconnect signal.
     /// Returns the potentially new transport if reconnection was successful.
     pub(crate) async fn handle_reconnect_signal(
         &mut self,
         stdout_sink: &mut StdoutSink,
-    ) -> Result<Option<SseClientTransport>> {
+    ) -> Result<Option<SseClientType>> {
         debug!("Received reconnect signal");
         self.reconnect_scheduled = false;
 
         if self.state == ProxyState::Disconnected {
             match try_reconnect(self).await {
                 Ok(mut new_transport) => {
-                    self.connected();
                     self.transport_valid = true;
 
                     initiate_post_reconnect_handshake(self, &mut new_transport, stdout_sink)
@@ -405,7 +417,7 @@ impl AppState {
     /// Handles the heartbeat interval tick.
     pub(crate) async fn handle_heartbeat_tick(
         &mut self,
-        transport: &mut SseClientTransport,
+        transport: &mut SseClientType,
     ) -> Result<()> {
         if self.state == ProxyState::Connected {
             let check_result = send_heartbeat_if_needed(self, transport).await;
@@ -414,7 +426,6 @@ impl AppState {
                     self.update_heartbeat();
                 }
                 Some(false) => {
-                    debug!("Heartbeat check failed - connection confirmed down");
                     self.handle_fatal_transport_error();
                 }
                 None => {}

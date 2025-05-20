@@ -4,7 +4,16 @@ version = "0.1.1"
 edition = "2024"
 
 [dependencies]
-rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk.git", rev = "afb8a905e54b87c69e880f9377cfe8424aa6f13b", features = ["server", "client", "transport-sse", "transport-child-process"] }
+rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk.git", rev = "c1c4c9a0c9afbfbbf9eb42d6f8b00d8546fbdc2c", features = [
+    "server",
+    "client",
+    "reqwest",
+    "client-side-sse",
+    "transport-sse-client",
+    "transport-streamable-http-client",
+    "transport-worker",
+    "transport-child-process"
+] }
 clap = { version = "4.5.37", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1.41"
@@ -20,7 +29,17 @@ version = "0.9"
 features = ["vendored"]
 
 [dev-dependencies]
-rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk.git", rev = "afb8a905e54b87c69e880f9377cfe8424aa6f13b", features = ["server", "client", "transport-sse", "transport-sse-server", "transport-child-process", "macros"] }
+rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk.git", rev = "c1c4c9a0c9afbfbbf9eb42d6f8b00d8546fbdc2c", features = [
+    "server",
+    "client",
+    "reqwest",
+    "client-side-sse",
+    "transport-sse-client",
+    "transport-sse-server",
+    "transport-child-process",
+    "transport-streamable-http-server",
+    "macros"
+] }
 axum = { version = "0.8", features = ["macros"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

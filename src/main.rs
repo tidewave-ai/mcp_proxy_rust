@@ -3,7 +3,7 @@ use clap::Parser;
 use futures::StreamExt;
 use rmcp::{
     model::{ClientJsonRpcMessage, ErrorCode, ServerJsonRpcMessage},
-    transport::sse::{ReqwestSseClient, SseTransport, SseTransportRetryConfig},
+    transport::{StreamableHttpClientTransport, Transport, sse_client::SseClientTransport},
 };
 use std::env;
 use tokio::io::{Stdin, Stdout};
@@ -18,16 +18,41 @@ mod core;
 mod state;
 
 use crate::cli::Args;
-use crate::core::flush_buffer_with_errors;
+use crate::core::{connect, flush_buffer_with_errors};
 use crate::state::{AppState, ProxyState}; // Only needed directly by main for final check
 
 // Custom Error Codes (Keep here or move to common/state? Keeping here for now)
 const DISCONNECTED_ERROR_CODE: ErrorCode = ErrorCode(-32010);
 const TRANSPORT_SEND_ERROR_CODE: ErrorCode = ErrorCode(-32011);
 
-type SseClientTransport = SseTransport<ReqwestSseClient, reqwest::Error>;
-type StdinCodec = rmcp::transport::io::JsonRpcMessageCodec<ClientJsonRpcMessage>;
-type StdoutCodec = rmcp::transport::io::JsonRpcMessageCodec<ServerJsonRpcMessage>;
+enum SseClientType {
+    Sse(SseClientTransport<reqwest::Client>),
+    Streamable(StreamableHttpClientTransport<reqwest::Client>),
+}
+
+impl SseClientType {
+    async fn send(
+        &mut self,
+        item: ClientJsonRpcMessage,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+        match self {
+            SseClientType::Sse(transport) => transport.send(item).await.map_err(|e| e.into()),
+            SseClientType::Streamable(transport) => {
+                transport.send(item).await.map_err(|e| e.into())
+            }
+        }
+    }
+
+    async fn receive(&mut self) -> Option<ServerJsonRpcMessage> {
+        match self {
+            SseClientType::Sse(transport) => transport.receive().await,
+            SseClientType::Streamable(transport) => transport.receive().await,
+        }
+    }
+}
+
+type StdinCodec = rmcp::transport::async_rw::JsonRpcMessageCodec<ClientJsonRpcMessage>;
+type StdoutCodec = rmcp::transport::async_rw::JsonRpcMessageCodec<ServerJsonRpcMessage>;
 type StdinStream = FramedRead<Stdin, StdinCodec>;
 type StdoutSink = FramedWrite<Stdout, StdoutCodec>;
 
@@ -35,7 +60,7 @@ type StdoutSink = FramedWrite<Stdout, StdoutCodec>;
 const INITIAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(5 * 60); // 5 minutes
 
 /// Attempts to establish the initial SSE connection, retrying on failure.
-async fn connect_with_retry(sse_url: &str, delay: Duration) -> Result<SseClientTransport> {
+async fn connect_with_retry(app_state: &AppState, delay: Duration) -> Result<SseClientType> {
     let start_time = Instant::now();
     let mut attempts = 0;
 
@@ -46,26 +71,16 @@ async fn connect_with_retry(sse_url: &str, delay: Duration) -> Result<SseClientT
             attempts
         );
 
-        // Try creating the client first, as this can fail due to URL parsing etc.
-        match ReqwestSseClient::new(sse_url) {
-            Ok(client) => {
-                match SseTransport::start_with_client(client).await {
-                    Ok(mut transport) => {
-                        info!("Initial connection successful!");
-                        // Configure transport to not retry internally after initial connect
-                        transport.retry_config = SseTransportRetryConfig {
-                            max_times: Some(0),
-                            min_duration: Duration::from_millis(0),
-                        };
-                        return Ok(transport);
-                    }
-                    Err(e) => {
-                        warn!("Attempt {} failed to start transport: {}", attempts, e);
-                    }
-                }
+        let result = connect(app_state).await;
+
+        // Try creating the transport
+        match result {
+            Ok(transport) => {
+                info!("Initial connection successful!");
+                return Ok(transport);
             }
             Err(e) => {
-                warn!("Attempt {} failed to create SSE client: {}", attempts, e);
+                warn!("Attempt {} failed to start transport: {}", attempts, e);
             }
         }
 
@@ -126,7 +141,7 @@ async fn main() -> Result<()> {
     // Establish initial SSE connection using the retry helper
     info!("Attempting initial connection to {}...", sse_url);
     let mut transport =
-        connect_with_retry(&sse_url, Duration::from_secs(args.initial_retry_interval)).await?;
+        connect_with_retry(&app_state, Duration::from_secs(args.initial_retry_interval)).await?;
 
     info!("Connection established. Proxy operational.");
     app_state.state = ProxyState::WaitingForClientInit;
@@ -154,7 +169,7 @@ async fn main() -> Result<()> {
                 }
             }
             // Handle message from SSE server
-            result = transport.next(), if app_state.transport_valid => {
+            result = transport.receive(), if app_state.transport_valid => {
                 if !app_state.handle_sse_message(result, &mut transport, &mut stdout_sink).await? {
                     break;
                 }
