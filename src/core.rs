@@ -1,13 +1,11 @@
 use crate::state::{AppState, BufferMode, ProxyState, ReconnectFailureReason};
-use crate::{DISCONNECTED_ERROR_CODE, SseClientTransport, StdoutSink, TRANSPORT_SEND_ERROR_CODE};
-use anyhow::Result;
-use futures::{FutureExt, SinkExt, StreamExt};
-use rmcp::{
-    model::{
-        ClientJsonRpcMessage, ClientRequest, EmptyResult, ErrorData, RequestId,
-        ServerJsonRpcMessage,
-    },
-    transport::sse::{ReqwestSseClient, SseTransport, SseTransportRetryConfig},
+use crate::{DISCONNECTED_ERROR_CODE, SseClientType, StdoutSink, TRANSPORT_SEND_ERROR_CODE};
+use anyhow::{Result, anyhow};
+use futures::FutureExt;
+use futures::SinkExt;
+use rmcp::model::{
+    ClientJsonRpcMessage, ClientNotification, ClientRequest, ErrorData, RequestId,
+    ServerJsonRpcMessage,
 };
 use std::time::Duration;
 use tracing::{debug, error, info};
@@ -36,11 +34,83 @@ pub(crate) async fn reply_disconnected(id: &RequestId, stdout_sink: &mut StdoutS
     Ok(())
 }
 
+pub(crate) async fn connect(app_state: &AppState) -> Result<SseClientType> {
+    // this function should try sending a POST request to the sse_url and see if
+    // the server responds with 405 method not supported. If so, it should call
+    // connect_with_sse, otherwise it should call connect_with_streamable.
+    let result = reqwest::Client::new()
+        .post(app_state.url.clone())
+        .header("Accept", "application/json,text/event-stream")
+        .header("Content-Type", "application/json")
+        .body(r#"{"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}"#)
+        .send()
+        .await?;
+
+    if result.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
+        debug!("Server responded with 405, using SSE transport");
+        return connect_with_sse(app_state).await;
+    } else if result.status().is_success() {
+        debug!("Server responded successfully, using streamable transport");
+        return connect_with_streamable(app_state).await;
+    } else {
+        error!("Server returned unexpected status: {}", result.status());
+        anyhow::bail!("Server returned unexpected status: {}", result.status());
+    }
+}
+
+pub(crate) async fn connect_with_streamable(app_state: &AppState) -> Result<SseClientType> {
+    let result = rmcp::transport::StreamableHttpClientTransport::with_client(
+        reqwest::Client::default(),
+        rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig {
+            uri: app_state.url.clone().into(),
+            // we don't want the sdk to perform any retries
+            retry_config: std::sync::Arc::new(
+                rmcp::transport::common::client_side_sse::FixedInterval {
+                    max_times: Some(0),
+                    duration: Duration::from_millis(0),
+                },
+            ),
+            channel_buffer_capacity: 16,
+        },
+    );
+
+    Ok(SseClientType::Streamable(result))
+}
+
+pub(crate) async fn connect_with_sse(app_state: &AppState) -> Result<SseClientType> {
+    let result = rmcp::transport::SseClientTransport::start_with_client(
+        reqwest::Client::default(),
+        rmcp::transport::sse_client::SseClientConfig {
+            sse_endpoint: app_state.url.clone().into(),
+            // we don't want the sdk to perform any retries
+            retry_policy: std::sync::Arc::new(
+                rmcp::transport::common::client_side_sse::FixedInterval {
+                    max_times: Some(0),
+                    duration: Duration::from_millis(0),
+                },
+            ),
+            use_message_endpoint: None,
+        },
+    )
+    .await;
+
+    match result {
+        Ok(transport) => {
+            info!("Successfully reconnected to SSE server");
+            Ok(SseClientType::Sse(transport))
+        }
+        Err(e) => {
+            error!("Failed to reconnect: {}", e);
+            Err(anyhow!("Connection failed: {}", e))
+        }
+    }
+}
+
 /// Attempts to reconnect to the SSE server with backoff.
 /// Does not mutate AppState directly.
 pub(crate) async fn try_reconnect(
     app_state: &AppState,
-) -> Result<SseClientTransport, ReconnectFailureReason> {
+) -> Result<SseClientType, ReconnectFailureReason> {
     let backoff = app_state.get_backoff_duration();
     info!(
         "Attempting to reconnect in {}s (attempt {})",
@@ -53,21 +123,16 @@ pub(crate) async fn try_reconnect(
         return Err(ReconnectFailureReason::TimeoutExceeded);
     }
 
-    let client = ReqwestSseClient::new(&app_state.url)
-        .map_err(|e| ReconnectFailureReason::ConnectionFailed(e.into()))?;
+    let result = connect(app_state).await;
 
-    match SseTransport::start_with_client(client).await {
-        Ok(mut new_transport) => {
-            new_transport.retry_config = SseTransportRetryConfig {
-                max_times: Some(0),
-                min_duration: Duration::from_millis(0),
-            };
+    match result {
+        Ok(transport) => {
             info!("Successfully reconnected to SSE server");
-            Ok(new_transport)
+            Ok(transport)
         }
         Err(e) => {
             error!("Failed to reconnect: {}", e);
-            Err(ReconnectFailureReason::ConnectionFailed(e.into()))
+            Err(ReconnectFailureReason::ConnectionFailed(e))
         }
     }
 }
@@ -75,9 +140,9 @@ pub(crate) async fn try_reconnect(
 /// Sends a JSON-RPC request to the SSE server and handles any transport errors.
 /// Returns true if the send was successful, false otherwise.
 pub(crate) async fn send_request_to_sse(
-    transport: &mut SseClientTransport,
+    transport: &mut SseClientType,
     request: ClientJsonRpcMessage,
-    original_id: RequestId,
+    original_message: ClientJsonRpcMessage,
     stdout_sink: &mut StdoutSink,
     app_state: &mut AppState,
 ) -> Result<bool> {
@@ -86,26 +151,11 @@ pub(crate) async fn send_request_to_sse(
         Ok(_) => Ok(true),
         Err(e) => {
             error!("Error sending to SSE: {}", e);
-            app_state.disconnected();
+            app_state.handle_fatal_transport_error();
+            app_state
+                .maybe_handle_message_while_disconnected(original_message, stdout_sink)
+                .await?;
 
-            if app_state.buf_mode == BufferMode::Store {
-                debug!("Buffering request for later retry");
-                app_state.in_buf.push(request);
-                app_state.schedule_flush_timer();
-                app_state.schedule_reconnect();
-            } else {
-                let error_response = ServerJsonRpcMessage::error(
-                    ErrorData::new(
-                        TRANSPORT_SEND_ERROR_CODE,
-                        format!("Transport error: {}", e),
-                        None,
-                    ),
-                    original_id,
-                );
-                if let Err(write_err) = stdout_sink.send(error_response).await {
-                    error!("Error writing error response to stdout: {}", write_err);
-                }
-            }
             Ok(false)
         }
     }
@@ -116,29 +166,9 @@ pub(crate) async fn send_request_to_sse(
 pub(crate) async fn process_client_request(
     message: ClientJsonRpcMessage,
     app_state: &mut AppState,
-    transport: &mut SseClientTransport,
+    transport: &mut SseClientType,
     stdout_sink: &mut StdoutSink,
 ) -> Result<()> {
-    // Handle ping directly if disconnected
-    if let ClientJsonRpcMessage::Request(ref req) = message {
-        if let ClientRequest::PingRequest(_) = &req.request {
-            if app_state.state == ProxyState::Disconnected {
-                debug!(
-                    "Received Ping request while disconnected, replying directly: {:?}",
-                    req.id
-                );
-                let response = ServerJsonRpcMessage::response(
-                    rmcp::model::ServerResult::EmptyResult(EmptyResult {}),
-                    req.id.clone(),
-                );
-                if let Err(e) = stdout_sink.send(response).await {
-                    error!("Error sending direct ping response to stdout: {}", e);
-                }
-                return Ok(());
-            }
-        }
-    }
-
     // Try mapping the ID first (for Response/Error cases).
     // If it returns None, the ID was unknown, so we skip processing/forwarding.
     let message = match app_state.map_client_response_error_id(message) {
@@ -146,14 +176,40 @@ pub(crate) async fn process_client_request(
         None => return Ok(()), // Skip forwarding if ID was not mapped
     };
 
-    // Check if disconnected and buffer if necessary (both requests and mapped responses/errors)
-    if app_state.state == ProxyState::Disconnected && app_state.buf_mode == BufferMode::Store {
-        debug!("Buffering message while disconnected: {:?}", message);
-        app_state.in_buf.push(message);
-        return Ok(());
+    // Handle ping directly if disconnected
+    match app_state
+        .maybe_handle_message_while_disconnected(message.clone(), stdout_sink)
+        .await
+    {
+        Err(_) => {}
+        Ok(_) => return Ok(()),
+    }
+
+    match &message {
+        ClientJsonRpcMessage::Request(req) => {
+            if app_state.init_message.is_none() {
+                if let ClientRequest::InitializeRequest(_) = req.request {
+                    debug!("Stored client initialization message");
+                    app_state.init_message = Some(message.clone());
+                    app_state.state = ProxyState::WaitingForServerInit(req.id.clone());
+                }
+            }
+        }
+        ClientJsonRpcMessage::Notification(notification) => {
+            if let ClientNotification::InitializedNotification(_) = notification.notification {
+                if app_state.state == ProxyState::WaitingForClientInitialized {
+                    debug!("Received client initialized notification, proxy fully connected.");
+                    app_state.connected();
+                } else {
+                    debug!("Forwarding client initialized notification outside of expected state.");
+                }
+            }
+        }
+        _ => {}
     }
 
     // Process requests separately to map their IDs before sending
+    let original_message = message.clone();
     if let ClientJsonRpcMessage::Request(req) = message {
         let request_id = req.id.clone();
         let mut req = req.clone();
@@ -167,7 +223,7 @@ pub(crate) async fn process_client_request(
         let _success = send_request_to_sse(
             transport,
             ClientJsonRpcMessage::Request(req),
-            request_id, // Pass the original ID for potential error reporting
+            original_message,
             stdout_sink,
             app_state,
         )
@@ -188,7 +244,7 @@ pub(crate) async fn process_client_request(
 /// Process buffered messages after a successful reconnection
 pub(crate) async fn process_buffered_messages(
     app_state: &mut AppState,
-    transport: &mut SseClientTransport,
+    transport: &mut SseClientType,
     stdout_sink: &mut StdoutSink,
 ) -> Result<()> {
     let buffered_messages = std::mem::take(&mut app_state.in_buf);
@@ -266,7 +322,7 @@ pub(crate) async fn flush_buffer_with_errors(
 /// Returns Ok(false) if sending the init message failed (triggers disconnect).
 pub(crate) async fn initiate_post_reconnect_handshake(
     app_state: &mut AppState,
-    transport: &mut SseClientTransport,
+    transport: &mut SseClientType,
     stdout_sink: &mut StdoutSink,
 ) -> Result<bool> {
     if let Some(init_msg) = &app_state.init_message {
@@ -274,9 +330,7 @@ pub(crate) async fn initiate_post_reconnect_handshake(
             req.id.clone()
         } else {
             error!("Stored init_message is not a request: {:?}", init_msg);
-            process_buffered_messages(app_state, transport, stdout_sink).await?;
-            app_state.state = ProxyState::Connected;
-            return Ok(true);
+            return Ok(false);
         };
 
         debug!(
@@ -285,7 +339,9 @@ pub(crate) async fn initiate_post_reconnect_handshake(
         );
         app_state.state = ProxyState::WaitingForServerInitHidden(id.clone());
 
-        if let Err(e) = transport.send(init_msg.clone()).await {
+        if let Err(e) =
+            process_client_request(init_msg.clone(), app_state, transport, stdout_sink).await
+        {
             info!("Error resending init message during handshake: {}", e);
             app_state.handle_fatal_transport_error();
             Ok(false)
@@ -308,11 +364,11 @@ pub(crate) async fn initiate_post_reconnect_handshake(
 /// Returns Some(true) if alive, Some(false) if dead, None if check not needed.
 pub(crate) async fn send_heartbeat_if_needed(
     app_state: &AppState,
-    transport: &mut SseClientTransport,
+    transport: &mut SseClientType,
 ) -> Option<bool> {
     if app_state.last_heartbeat.elapsed() > Duration::from_secs(5) {
         debug!("Checking SSE connection state due to inactivity...");
-        match transport.next().now_or_never() {
+        match transport.receive().now_or_never() {
             Some(Some(_)) => {
                 debug!("Heartbeat check: Received message/event, connection alive.");
                 Some(true)
