@@ -2,7 +2,8 @@
 
 A standalone binary for connecting STDIO based MCP clients to HTTP (SSE) based MCP servers.
 
-Note: At the moment this only works with MCP servers that use the `2024-11-05` specification.
+Note: the proxy supports both SSE according to the `2024-11-05` as well as streamable HTTP according to the `2025-03-26` specification.
+It may happen though that the connecting client does **not** support the version sent by the server.
 
 ## Installation
 
