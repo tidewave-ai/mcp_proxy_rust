@@ -16,13 +16,13 @@ Depending on your Mac, you can download the latest version with one of the follo
 Apple Silicon:
 
 ```bash
-$ curl -sL https://github.com/tidewave-ai/mcp_proxy_rust/releases/latest/download/mcp-proxy-aarch64-apple-darwin.tar.gz | tar xv
+curl -sL https://github.com/tidewave-ai/mcp_proxy_rust/releases/latest/download/mcp-proxy-aarch64-apple-darwin.tar.gz | tar xv
 ```
 
 Intel:
 
 ```bash
-$ curl -sL https://github.com/tidewave-ai/mcp_proxy_rust/releases/latest/download/mcp-proxy-x86_64-apple-darwin.tar.gz | tar xv
+curl -sL https://github.com/tidewave-ai/mcp_proxy_rust/releases/latest/download/mcp-proxy-x86_64-apple-darwin.tar.gz | tar xv
 ```
 
 which will put the `mcp-proxy` binary in the current working directory (`pwd`).
@@ -32,7 +32,7 @@ Note that the binaries are not notarized, so if you download the release with th
 Alternatively, you can remove the quarantine flag with:
 
 ```bash
-$ xattr -d com.apple.quarantine /path/to/mcp-proxy
+xattr -d com.apple.quarantine /path/to/mcp-proxy
 ```
 
 ### Linux
@@ -42,13 +42,13 @@ You can download the latest release from the [Releases page](https://github.com/
 x86:
 
 ```bash
-$ curl -sL https://github.com/tidewave-ai/mcp_proxy_rust/releases/latest/download/mcp-proxy-x86_64-unknown-linux-musl.tar.gz | tar zxv
+curl -sL https://github.com/tidewave-ai/mcp_proxy_rust/releases/latest/download/mcp-proxy-x86_64-unknown-linux-musl.tar.gz | tar zxv
 ```
 
 arm64 / aarch64:
 
 ```bash
-$ curl -sL https://github.com/tidewave-ai/mcp_proxy_rust/releases/latest/download/mcp-proxy-aarch64-unknown-linux-musl.tar.gz | tar zxv
+curl -sL https://github.com/tidewave-ai/mcp_proxy_rust/releases/latest/download/mcp-proxy-aarch64-unknown-linux-musl.tar.gz | tar zxv
 ```
 
 ### Windows
@@ -64,7 +64,7 @@ curl.exe -L -o mcp-proxy.zip https://github.com/tidewave-ai/mcp_proxy_rust/relea
 The proxy is built in Rust. If you have Rust and its tools installed, the project can be built with `cargo`:
 
 ```bash
-$ cargo build --release
+cargo build --release
 ```
 
 Then, the binary will be located at `target/release/mcp-proxy`.
