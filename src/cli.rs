@@ -15,7 +15,7 @@ pub struct Args {
     #[arg(long)]
     pub max_disconnected_time: Option<u64>,
 
-    /// Initial retry interal in seconds. Default is 5 seconds
+    /// Initial retry interval in seconds. Default is 5 seconds
     #[arg(long, default_value = "5")]
     pub initial_retry_interval: u64,
 }
