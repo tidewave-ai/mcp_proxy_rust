@@ -133,7 +133,7 @@ async fn main() -> Result<()> {
     let (timer_tx, mut timer_rx) = tokio::sync::mpsc::channel(10);
 
     // Initialize application state
-    let mut app_state = AppState::new(sse_url.clone(), args.max_disconnected_time);
+    let mut app_state = AppState::new(sse_url.clone(), args.max_disconnected_time, args.rewrite_protocol_version);
     // Pass channel senders to state
     app_state.reconnect_tx = Some(reconnect_tx.clone());
     app_state.timer_tx = Some(timer_tx.clone());
