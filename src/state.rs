@@ -16,6 +16,7 @@ use tokio::sync::mpsc::Sender;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
+
 /// Reasons why a reconnection attempt might fail.
 #[derive(Debug)]
 pub enum ReconnectFailureReason {
@@ -75,10 +76,12 @@ pub struct AppState {
     pub transport_valid: bool,
     /// Time of last heartbeat check
     pub last_heartbeat: Instant,
+    /// Whether to enable protocol version rewriting
+    pub rewrite_protocol_version: bool,
 }
 
 impl AppState {
-    pub fn new(url: String, max_disconnected_time: Option<u64>) -> Self {
+    pub fn new(url: String, max_disconnected_time: Option<u64>, rewrite_protocol_version: bool) -> Self {
         Self {
             url,
             max_disconnected_time,
@@ -95,6 +98,7 @@ impl AppState {
             reconnect_scheduled: false,
             transport_valid: true,
             last_heartbeat: Instant::now(),
+            rewrite_protocol_version,
         }
     }
 
@@ -290,6 +294,13 @@ impl AppState {
                     }
                     // --- End Initialization Response Handling ---
                 }
+
+                // Apply protocol version rewriting if enabled
+                let message = if self.rewrite_protocol_version {
+                    self.rewrite_protocol_version(message)
+                } else {
+                    message
+                };
 
                 // Forward the (potentially modified) message to stdout
                 // This now handles mapped server requests, mapped responses/errors, and notifications
@@ -536,5 +547,73 @@ impl AppState {
         }
         // Not a response/error, return Some(original_message)
         Some(message)
+    }
+
+    /// Rewrites protocol version in server messages for compatibility
+    /// Changes "2025-03-26" to "2024-11-05" in initialize responses
+    fn rewrite_protocol_version(&self, message: ServerJsonRpcMessage) -> ServerJsonRpcMessage {
+        match message {
+            ServerJsonRpcMessage::Response(response) => {
+                // Serialize the response to JSON, modify it, then deserialize back
+                if let Ok(mut json_value) = rmcp::serde_json::to_value(&response) {
+                    if let Some(result) = json_value.get_mut("result") {
+                        let mut modified = false;
+
+                        // Check for protocolVersion in the result
+                        if let Some(protocol_version) = result.get_mut("protocolVersion") {
+                            if protocol_version == "2025-03-26" {
+                                debug!("Rewriting protocolVersion from '2025-03-26' to '2024-11-05' for compatibility");
+                                *protocol_version = rmcp::serde_json::Value::String("2024-11-05".to_string());
+                                modified = true;
+                            }
+                        }
+
+                        if modified {
+                            if let Ok(rewritten_response) = rmcp::serde_json::from_value(json_value) {
+                                return ServerJsonRpcMessage::Response(rewritten_response);
+                            }
+                        }
+                    }
+                }
+                ServerJsonRpcMessage::Response(response)
+            }
+            _ => message, // Don't modify other message types
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_protocol_version_rewriting() {
+        let app_state = AppState::new("http://test".to_string(), None, true);
+
+        // Create a mock JSON response that contains protocolVersion
+        let mock_json = rmcp::serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "test-id",
+            "result": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {
+                    "tools": {}
+                }
+            }
+        });
+
+        // Convert to ServerJsonRpcMessage and test rewriting
+        if let Ok(message) = rmcp::serde_json::from_value::<ServerJsonRpcMessage>(mock_json) {
+            let rewritten = app_state.rewrite_protocol_version(message);
+
+            // Convert back to JSON to check the result
+            if let Ok(rewritten_json) = rmcp::serde_json::to_value(&rewritten) {
+                if let Some(result) = rewritten_json.get("result") {
+                    if let Some(protocol_version) = result.get("protocolVersion") {
+                        assert_eq!(protocol_version, "2024-11-05");
+                    }
+                }
+            }
+        }
     }
 }

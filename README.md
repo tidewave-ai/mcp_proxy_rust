@@ -5,6 +5,12 @@ A standalone binary for connecting STDIO based MCP clients to HTTP (SSE) based M
 Note: the proxy supports both SSE according to the `2024-11-05` as well as streamable HTTP according to the `2025-03-26` specification.
 It may happen though that the connecting client does **not** support the version sent by the server.
 
+## Protocol Version Compatibility
+
+The proxy can optionally handle protocol version compatibility between clients and servers. When enabled with the `--rewrite-protocol-version` flag, the proxy will rewrite protocol version `2025-03-26` to `2024-11-05` in server initialize responses to ensure compatibility with older clients.
+
+This feature is opt-in and must be explicitly enabled using the command line flag.
+
 ## Installation
 
 The latest releases are available on the [releases page](https://github.com/tidewave-ai/mcp_proxy_rust/releases).
@@ -106,3 +112,4 @@ If you have an SSE MCP server available at `http://localhost:4000/tidewave/mcp`,
 Other supported flags:
 
 * `--max-disconnected-time` the maximum amount of time for trying to reconnect while disconnected. When not set, defaults to infinity.
+* `--rewrite-protocol-version` enable protocol version rewriting (2025-03-26 -> 2024-11-05) for client compatibility.

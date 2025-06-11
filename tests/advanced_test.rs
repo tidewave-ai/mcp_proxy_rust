@@ -179,6 +179,76 @@ async fn protocol_initialization(server_name: &str) -> Result<()> {
     Ok(())
 }
 
+async fn protocol_version_compatibility_with_rewrite(server_name: &str) -> Result<()> {
+    const BIND_ADDRESS: &str = "127.0.0.1:8186";
+    let (server_handle, server_url) = create_sse_server(server_name, BIND_ADDRESS.parse()?).await?;
+
+    // Create a child process for the proxy with rewrite flag enabled
+    let (child, mut reader, stderr_reader, mut stdin) = spawn_proxy(&server_url, vec!["--rewrite-protocol-version"]).await?;
+    let stderr_buffer = collect_stderr(stderr_reader);
+    let _guard = TestGuard::new(child, server_handle, stderr_buffer);
+
+    // Send initialization message with 2024-11-05 (older version)
+    let init_message = r#"{"jsonrpc":"2.0","id":"init-compat","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"compatibility-test","version":"0.1.0"}}}"#;
+    stdin.write_all(init_message.as_bytes()).await?;
+    stdin.write_all(b"\n").await?;
+
+    // Read the response
+    let mut response = String::new();
+    reader.read_line(&mut response).await?;
+
+    tracing::info!("Protocol compatibility test with rewrite response: {}", response.trim());
+
+    // Verify the response contains expected data
+    assert!(response.contains("\"id\":\"init-compat\""));
+    assert!(response.contains("\"result\""));
+
+    // Check that protocol version rewriting is working
+    if response.contains("protocolVersion") {
+        // Should contain 2024-11-05 (either original or rewritten)
+        assert!(response.contains("2024-11-05"), "Protocol version should be 2024-11-05");
+    }
+
+    // Send initialized notification
+    let initialized_message = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+    stdin.write_all(initialized_message.as_bytes()).await?;
+    stdin.write_all(b"\n").await?;
+
+    Ok(())
+}
+
+async fn protocol_version_compatibility_without_rewrite(server_name: &str) -> Result<()> {
+    const BIND_ADDRESS: &str = "127.0.0.1:8187";
+    let (server_handle, server_url) = create_sse_server(server_name, BIND_ADDRESS.parse()?).await?;
+
+    // Create a child process for the proxy WITHOUT rewrite flag
+    let (child, mut reader, stderr_reader, mut stdin) = spawn_proxy(&server_url, vec![]).await?;
+    let stderr_buffer = collect_stderr(stderr_reader);
+    let _guard = TestGuard::new(child, server_handle, stderr_buffer);
+
+    // Send initialization message with 2024-11-05 (older version)
+    let init_message = r#"{"jsonrpc":"2.0","id":"init-no-rewrite","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"no-rewrite-test","version":"0.1.0"}}}"#;
+    stdin.write_all(init_message.as_bytes()).await?;
+    stdin.write_all(b"\n").await?;
+
+    // Read the response
+    let mut response = String::new();
+    reader.read_line(&mut response).await?;
+
+    tracing::info!("Protocol compatibility test without rewrite response: {}", response.trim());
+
+    // Verify the response contains expected data
+    assert!(response.contains("\"id\":\"init-no-rewrite\""));
+    assert!(response.contains("\"result\""));
+
+    // Send initialized notification
+    let initialized_message = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+    stdin.write_all(initialized_message.as_bytes()).await?;
+    stdin.write_all(b"\n").await?;
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn test_protocol_initialization() -> Result<()> {
     protocol_initialization("echo").await?;
@@ -542,6 +612,19 @@ async fn ping_when_disconnected(server_name: &str) -> Result<()> {
 async fn test_ping_when_disconnected() -> Result<()> {
     ping_when_disconnected("echo").await?;
     ping_when_disconnected("echo_streamable").await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_protocol_version_compatibility() -> Result<()> {
+    // Test with rewrite flag enabled
+    protocol_version_compatibility_with_rewrite("echo").await?;
+    protocol_version_compatibility_with_rewrite("echo_streamable").await?;
+
+    // Test without rewrite flag (default behavior)
+    protocol_version_compatibility_without_rewrite("echo").await?;
+    protocol_version_compatibility_without_rewrite("echo_streamable").await?;
 
     Ok(())
 }
