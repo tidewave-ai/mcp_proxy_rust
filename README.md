@@ -106,3 +106,4 @@ If you have an SSE MCP server available at `http://localhost:4000/tidewave/mcp`,
 Other supported flags:
 
 * `--max-disconnected-time` the maximum amount of time for trying to reconnect while disconnected. When not set, defaults to infinity.
+* `--override-protocol-version` to override the protocol version reported by the proxy. This is useful when using the proxy with a client that expects a different protocol version, when the only reason for mismatching protocols is the use of streamable / SSE transports.

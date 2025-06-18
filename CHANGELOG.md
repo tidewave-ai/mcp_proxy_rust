@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1 (2025-06-18)
+
+* Enhancements
+  * add `--override-protocol-version` to override the protocol version reported by the proxy
+
 ## 0.2.0 (2025-05-20)
 
 * Enhancements
