@@ -110,7 +110,7 @@ async fn create_sse_server(
     address: SocketAddr,
 ) -> Result<(tokio::process::Child, String)> {
     let url = if server_name == "echo_streamable" {
-        format!("http://{}", address)
+        format!("http://{}/mcp", address)
     } else {
         format!("http://{}/sse", address)
     };
@@ -348,7 +348,7 @@ async fn initial_connection_retry(server_name: &str) -> Result<()> {
 
     const BIND_ADDRESS: &str = "127.0.0.1:8184";
     let server_url = if server_name == "echo_streamable" {
-        format!("http://{}", BIND_ADDRESS)
+        format!("http://{}/mcp", BIND_ADDRESS)
     } else {
         format!("http://{}/sse", BIND_ADDRESS)
     };
@@ -542,6 +542,101 @@ async fn ping_when_disconnected(server_name: &str) -> Result<()> {
 async fn test_ping_when_disconnected() -> Result<()> {
     ping_when_disconnected("echo").await?;
     ping_when_disconnected("echo_streamable").await?;
+
+    Ok(())
+}
+
+async fn protocol_version_override(server_name: &str) -> Result<()> {
+    const BIND_ADDRESS: &str = "127.0.0.1:8186";
+
+    // Phase 1: Test normal behavior (no override)
+    {
+        let (server_handle, server_url) =
+            create_sse_server(server_name, BIND_ADDRESS.parse()?).await?;
+        let (child, mut reader, stderr_reader, mut stdin) =
+            spawn_proxy(&server_url, vec![]).await?;
+        let stderr_buffer = collect_stderr(stderr_reader);
+        let _guard = TestGuard::new(child, server_handle, stderr_buffer);
+
+        // Send initialization message with 2025-03-26
+        let init_message = r#"{"jsonrpc":"2.0","id":"init-normal","method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}"#;
+        stdin.write_all(init_message.as_bytes()).await?;
+        stdin.write_all(b"\n").await?;
+
+        // Read the initialization response
+        let mut response = String::new();
+        timeout(Duration::from_secs(10), reader.read_line(&mut response)).await??;
+
+        // Verify the response contains the original protocol version
+        assert!(
+            response.contains("\"protocolVersion\":\"2025-03-26\""),
+            "Expected server to respond with 2025-03-26 protocol version, got: {}",
+            response
+        );
+
+        // Send initialized notification
+        let initialized_message = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+        stdin.write_all(initialized_message.as_bytes()).await?;
+        stdin.write_all(b"\n").await?;
+
+        // Clean shutdown
+        drop(stdin);
+    }
+
+    // Give a moment for cleanup
+    sleep(Duration::from_millis(500)).await;
+
+    // Phase 2: Test with protocol version override
+    {
+        let (server_handle, server_url) =
+            create_sse_server(server_name, BIND_ADDRESS.parse()?).await?;
+        let (child, mut reader, stderr_reader, mut stdin) = spawn_proxy(
+            &server_url,
+            vec!["--override-protocol-version", "2024-11-05"],
+        )
+        .await?;
+        let stderr_buffer = collect_stderr(stderr_reader);
+        let _guard = TestGuard::new(child, server_handle, stderr_buffer);
+
+        // Send initialization message with 2025-03-26 (same as phase 1)
+        let init_message = r#"{"jsonrpc":"2.0","id":"init-override","method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}"#;
+        stdin.write_all(init_message.as_bytes()).await?;
+        stdin.write_all(b"\n").await?;
+
+        // Read the initialization response
+        let mut response = String::new();
+        timeout(Duration::from_secs(10), reader.read_line(&mut response)).await??;
+
+        // Verify the response contains the overridden protocol version
+        assert!(
+            response.contains("\"protocolVersion\":\"2024-11-05\""),
+            "Expected proxy to override protocol version to 2024-11-05, got: {}",
+            response
+        );
+
+        // Verify it does NOT contain the original version
+        assert!(
+            !response.contains("\"protocolVersion\":\"2025-03-26\""),
+            "Protocol version should have been overridden from 2025-03-26 to 2024-11-05, got: {}",
+            response
+        );
+
+        // Send initialized notification
+        let initialized_message = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+        stdin.write_all(initialized_message.as_bytes()).await?;
+        stdin.write_all(b"\n").await?;
+
+        // Clean shutdown
+        drop(stdin);
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_protocol_version_override() -> Result<()> {
+    protocol_version_override("echo").await?;
+    protocol_version_override("echo_streamable").await?;
 
     Ok(())
 }

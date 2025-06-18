@@ -183,12 +183,6 @@ dependencies = [
 
 [[package]]
 name = "base64"
-version = "0.21.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
-
-[[package]]
-name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
@@ -1288,7 +1282,7 @@ version = "0.12.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d19c46a6fdd48bc4dab94b6103fccc55d34c67cc0ad04653aad4ea2a07cd7bbb"
 dependencies = [
- "base64 0.22.1",
+ "base64",
  "bytes",
  "encoding_rs",
  "futures-core",
@@ -1350,13 +1344,16 @@ dependencies = [
 [[package]]
 name = "rmcp"
 version = "0.1.5"
-source = "git+https://github.com/modelcontextprotocol/rust-sdk.git?rev=076dc2c2cd8910bee56bae13f29bbcff8c279666#076dc2c2cd8910bee56bae13f29bbcff8c279666"
+source = "git+https://github.com/modelcontextprotocol/rust-sdk.git?rev=4c34b64b7f8dcabf94d52a9c6518c6b49c1f0451#4c34b64b7f8dcabf94d52a9c6518c6b49c1f0451"
 dependencies = [
  "axum",
- "base64 0.21.7",
+ "base64",
+ "bytes",
  "chrono",
  "futures",
  "http",
+ "http-body",
+ "http-body-util",
  "paste",
  "pin-project-lite",
  "process-wrap",
@@ -1371,6 +1368,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util",
+ "tower-service",
  "tracing",
  "uuid",
 ]
@@ -1378,7 +1376,7 @@ dependencies = [
 [[package]]
 name = "rmcp-macros"
 version = "0.1.5"
-source = "git+https://github.com/modelcontextprotocol/rust-sdk.git?rev=076dc2c2cd8910bee56bae13f29bbcff8c279666#076dc2c2cd8910bee56bae13f29bbcff8c279666"
+source = "git+https://github.com/modelcontextprotocol/rust-sdk.git?rev=4c34b64b7f8dcabf94d52a9c6518c6b49c1f0451#4c34b64b7f8dcabf94d52a9c6518c6b49c1f0451"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1645,9 +1643,9 @@ dependencies = [
 
 [[package]]
 name = "sse-stream"
-version = "0.1.4"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0baa01c3efebe4050c7bb999ae87d5b17256b7f71391389e5fc08cdcd98ad550"
+checksum = "3f649a9f9e91db2ed32f3724516eac2bc09fab77fc33be8f670f5619b9dc6c3f"
 dependencies = [
  "bytes",
  "futures-util",
