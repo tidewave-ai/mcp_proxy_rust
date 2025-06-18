@@ -8,7 +8,7 @@ use anyhow::Result;
 use futures::SinkExt;
 use rmcp::model::{
     ClientJsonRpcMessage, ClientNotification, ClientRequest, EmptyResult, InitializedNotification,
-    InitializedNotificationMethod, RequestId, ServerJsonRpcMessage,
+    InitializedNotificationMethod, ProtocolVersion, RequestId, ServerJsonRpcMessage, ServerResult,
 };
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -49,6 +49,8 @@ pub struct AppState {
     pub url: String,
     /// Maximum time to try reconnecting in seconds (None = infinity)
     pub max_disconnected_time: Option<u64>,
+    /// Override protocol version
+    pub override_protocol_version: Option<ProtocolVersion>,
     /// When we were disconnected
     pub disconnected_since: Option<Instant>,
     /// Current state of the application
@@ -78,10 +80,15 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(url: String, max_disconnected_time: Option<u64>) -> Self {
+    pub fn new(
+        url: String,
+        max_disconnected_time: Option<u64>,
+        override_protocol_version: Option<ProtocolVersion>,
+    ) -> Self {
         Self {
             url,
             max_disconnected_time,
+            override_protocol_version,
             disconnected_since: None,
             state: ProxyState::Connecting,
             connect_tries: 0,
@@ -286,6 +293,7 @@ impl AppState {
                                 "Initial connection successful, received init response. Waiting for client initialized."
                             );
                             self.state = ProxyState::WaitingForClientInitialized;
+                            message = self.maybe_overwrite_protocol_version(message);
                         }
                     }
                     // --- End Initialization Response Handling ---
@@ -536,5 +544,26 @@ impl AppState {
         }
         // Not a response/error, return Some(original_message)
         Some(message)
+    }
+
+    fn maybe_overwrite_protocol_version(
+        &mut self,
+        message: ServerJsonRpcMessage,
+    ) -> ServerJsonRpcMessage {
+        if let Some(protocol_version) = &self.override_protocol_version {
+            match message {
+                ServerJsonRpcMessage::Response(mut resp) => {
+                    if let ServerResult::InitializeResult(mut initialize_result) = resp.result {
+                        initialize_result.protocol_version = protocol_version.clone();
+                        resp.result = ServerResult::InitializeResult(initialize_result);
+                        return ServerJsonRpcMessage::Response(resp);
+                    }
+                    ServerJsonRpcMessage::Response(resp)
+                }
+                other => other,
+            }
+        } else {
+            message
+        }
     }
 }

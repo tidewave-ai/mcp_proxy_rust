@@ -18,4 +18,8 @@ pub struct Args {
     /// Initial retry interval in seconds. Default is 5 seconds
     #[arg(long, default_value = "5")]
     pub initial_retry_interval: u64,
+
+    #[arg(long)]
+    /// Override the protocol version returned to the client
+    pub override_protocol_version: Option<String>,
 }

@@ -64,13 +64,9 @@ pub(crate) async fn connect_with_streamable(app_state: &AppState) -> Result<SseC
         rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig {
             uri: app_state.url.clone().into(),
             // we don't want the sdk to perform any retries
-            retry_config: std::sync::Arc::new(
-                rmcp::transport::common::client_side_sse::FixedInterval {
-                    max_times: Some(0),
-                    duration: Duration::from_millis(0),
-                },
-            ),
+            retry_config: std::sync::Arc::new(rmcp::transport::common::client_side_sse::NeverRetry),
             channel_buffer_capacity: 16,
+            allow_stateless: true,
         },
     );
 

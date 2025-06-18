@@ -4,7 +4,7 @@ version = "0.2.0"
 edition = "2024"
 
 [dependencies]
-rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk.git", rev = "076dc2c2cd8910bee56bae13f29bbcff8c279666", features = [
+rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk.git", rev = "4c34b64b7f8dcabf94d52a9c6518c6b49c1f0451", features = [
     "server",
     "client",
     "reqwest",
@@ -29,7 +29,7 @@ version = "0.9"
 features = ["vendored"]
 
 [dev-dependencies]
-rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk.git", rev = "076dc2c2cd8910bee56bae13f29bbcff8c279666", features = [
+rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk.git", rev = "4c34b64b7f8dcabf94d52a9c6518c6b49c1f0451", features = [
     "server",
     "client",
     "reqwest",

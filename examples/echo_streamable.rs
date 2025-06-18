@@ -1,6 +1,8 @@
 use anyhow::Context;
 use clap::Parser;
-use rmcp::transport::StreamableHttpServer;
+use rmcp::transport::streamable_http_server::{
+    StreamableHttpService, session::local::LocalSessionManager,
+};
 use tracing_subscriber::FmtSubscriber;
 
 use rmcp::{
@@ -12,6 +14,10 @@ use rmcp::{
 pub struct Echo;
 #[tool(tool_box)]
 impl Echo {
+    pub fn new() -> Self {
+        Self {}
+    }
+
     #[tool(description = "Echo a message")]
     fn echo(&self, #[tool(param)] message: String) -> String {
         message
@@ -49,11 +55,17 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::subscriber::set_global_default(subscriber).context("Failed to set up logging")?;
 
-    let ct = StreamableHttpServer::serve(args.address)
-        .await?
-        .with_service(Echo::default);
+    let service = StreamableHttpService::new(
+        || Ok(Echo::new()),
+        LocalSessionManager::default().into(),
+        Default::default(),
+    );
 
-    tokio::signal::ctrl_c().await?;
-    ct.cancel();
+    let router = axum::Router::new().nest_service("/mcp", service);
+    let tcp_listener = tokio::net::TcpListener::bind(args.address).await?;
+    let _ = axum::serve(tcp_listener, router)
+        .with_graceful_shutdown(async { tokio::signal::ctrl_c().await.unwrap() })
+        .await;
+
     Ok(())
 }
