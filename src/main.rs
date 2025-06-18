@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use futures::StreamExt;
 use rmcp::{
-    model::{ClientJsonRpcMessage, ErrorCode, ServerJsonRpcMessage},
+    model::{ClientJsonRpcMessage, ErrorCode, ProtocolVersion, ServerJsonRpcMessage},
     transport::{StreamableHttpClientTransport, Transport, sse_client::SseClientTransport},
 };
 use std::env;
@@ -128,12 +128,33 @@ async fn main() -> Result<()> {
     debug!("Starting MCP proxy with URL: {}", sse_url);
     debug!("Max disconnected time: {:?}s", args.max_disconnected_time);
 
+    // Parse protocol version override if provided
+    let override_protocol_version = if let Some(version_str) = args.override_protocol_version {
+        let protocol_version = match version_str.as_str() {
+            "2024-11-05" => ProtocolVersion::V_2024_11_05,
+            "2025-03-26" => ProtocolVersion::V_2025_03_26,
+            _ => {
+                return Err(anyhow!(
+                    "Unsupported protocol version: {}. Supported versions are: 2024-11-05, 2025-03-26",
+                    version_str
+                ));
+            }
+        };
+        Some(protocol_version)
+    } else {
+        None
+    };
+
     // Set up communication channels
     let (reconnect_tx, mut reconnect_rx) = tokio::sync::mpsc::channel(10);
     let (timer_tx, mut timer_rx) = tokio::sync::mpsc::channel(10);
 
     // Initialize application state
-    let mut app_state = AppState::new(sse_url.clone(), args.max_disconnected_time);
+    let mut app_state = AppState::new(
+        sse_url.clone(),
+        args.max_disconnected_time,
+        override_protocol_version,
+    );
     // Pass channel senders to state
     app_state.reconnect_tx = Some(reconnect_tx.clone());
     app_state.timer_tx = Some(timer_tx.clone());
