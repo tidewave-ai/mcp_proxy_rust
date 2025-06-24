@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.2 (2025-06-24)
+
+* Bug fixes
+  * Fix backoff overflow after 64 reconnect tries causing endless immediate reconnect tries
+
 ## 0.2.1 (2025-06-18)
 
 * Enhancements
