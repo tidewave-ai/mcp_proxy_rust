@@ -134,7 +134,8 @@ impl AppState {
     }
 
     pub fn get_backoff_duration(&self) -> Duration {
-        let seconds = std::cmp::min(2u64.pow(self.connect_tries.saturating_sub(1)), 8);
+        let clamped_tries = std::cmp::min(self.connect_tries, 3);
+        let seconds = 2u64.pow(clamped_tries);
         Duration::from_secs(seconds)
     }
 
