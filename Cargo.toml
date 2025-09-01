@@ -4,13 +4,13 @@ version = "0.2.2"
 edition = "2024"
 
 [dependencies]
-rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk.git", rev = "4c34b64b7f8dcabf94d52a9c6518c6b49c1f0451", features = [
+rmcp = { version = "0.6.1", features = [
     "server",
     "client",
     "reqwest",
     "client-side-sse",
-    "transport-sse-client",
-    "transport-streamable-http-client",
+    "transport-sse-client-reqwest",
+    "transport-streamable-http-client-reqwest",
     "transport-worker",
     "transport-child-process"
 ] }
@@ -29,12 +29,12 @@ version = "0.9"
 features = ["vendored"]
 
 [dev-dependencies]
-rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk.git", rev = "4c34b64b7f8dcabf94d52a9c6518c6b49c1f0451", features = [
+rmcp = { version = "0.6.1", features = [
     "server",
     "client",
     "reqwest",
     "client-side-sse",
-    "transport-sse-client",
+    "transport-sse-client-reqwest",
     "transport-sse-server",
     "transport-child-process",
     "transport-streamable-http-server",
