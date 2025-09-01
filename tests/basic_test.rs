@@ -1,4 +1,5 @@
 mod echo;
+use echo::Echo;
 use rmcp::{
     ServiceExt,
     transport::{ConfigureCommandExt, SseServer, TokioChildProcess},
@@ -11,7 +12,7 @@ const TEST_SERVER_URL: &str = "http://localhost:8099/sse";
 async fn test_proxy_connects_to_real_server() -> anyhow::Result<()> {
     let ct = SseServer::serve(BIND_ADDRESS.parse()?)
         .await?
-        .with_service(echo::Echo::default);
+        .with_service_directly(Echo::new);
 
     let transport = TokioChildProcess::new(
         tokio::process::Command::new("./target/debug/mcp-proxy").configure(|cmd| {
