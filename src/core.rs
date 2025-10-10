@@ -145,7 +145,9 @@ pub(crate) async fn send_request_to_sse(
 ) -> Result<bool> {
     debug!("Sending request to SSE: {:?}", request);
     match transport.send(request.clone()).await {
-        Ok(_) => Ok(true),
+        Ok(_) => {
+            Ok(true)
+        },
         Err(e) => {
             error!("Error sending to SSE: {}", e);
             app_state.handle_fatal_transport_error();
@@ -166,6 +168,31 @@ pub(crate) async fn process_client_request(
     transport: &mut SseClientType,
     stdout_sink: &mut StdoutSink,
 ) -> Result<()> {
+    // Check if this is a resources/list request and handle it locally
+    if let ClientJsonRpcMessage::Request(req) = &message {
+        if let ClientRequest::ListResourcesRequest(_) = req.request {
+            debug!("Intercepting resources/list request to return empty list");
+            
+            // Create empty resources list response
+            let empty_resources_response = ServerJsonRpcMessage::response(
+                rmcp::model::ServerResult::ListResourcesResult(
+                    rmcp::model::ListResourcesResult {
+                        resources: Vec::new(),
+                        next_cursor: None,
+                    }
+                ),
+                req.id.clone(),
+            );
+            
+            // Send response directly to stdout
+            if let Err(e) = stdout_sink.send(empty_resources_response).await {
+                error!("Error writing empty resources response to stdout: {}", e);
+            }
+            
+            return Ok(());
+        }
+    }
+
     // Try mapping the ID first (for Response/Error cases).
     // If it returns None, the ID was unknown, so we skip processing/forwarding.
     let message = match app_state.map_client_response_error_id(message) {
@@ -250,6 +277,29 @@ pub(crate) async fn process_buffered_messages(
     for message in buffered_messages {
         match &message {
             ClientJsonRpcMessage::Request(req) => {
+                // Check if this is a buffered resources/list request and handle it locally
+                if let ClientRequest::ListResourcesRequest(_) = req.request {
+                    debug!("Intercepting buffered resources/list request to return empty list");
+                    
+                    // Create empty resources list response
+                    let empty_resources_response = ServerJsonRpcMessage::response(
+                        rmcp::model::ServerResult::ListResourcesResult(
+                            rmcp::model::ListResourcesResult {
+                                resources: Vec::new(),
+                                next_cursor: None,
+                            }
+                        ),
+                        req.id.clone(),
+                    );
+                    
+                    // Send response directly to stdout
+                    if let Err(e) = stdout_sink.send(empty_resources_response).await {
+                        error!("Error writing empty resources response to stdout: {}", e);
+                    }
+                    
+                    continue; // Skip forwarding to server
+                }
+                
                 let request_id = req.id.clone();
                 let mut req = req.clone();
 
@@ -272,11 +322,37 @@ pub(crate) async fn process_buffered_messages(
                     }
                 }
             }
+            ClientJsonRpcMessage::Notification(notification) => {
+                // Check if this is a progress notification that should be filtered
+                let notification_method = match &notification.notification {
+                    ClientNotification::InitializedNotification(_) => "notifications/initialized",
+                    _ => {
+                        // Check if this is a progress notification by inspecting the raw message
+                        // Progress notifications would have been buffered before transformation
+                        let serialized = serde_json::to_string(&message).unwrap_or_default();
+                        if serialized.contains("\"method\":\"progress\"") {
+                            debug!("Filtering out buffered progress notification during replay");
+                            continue; // Skip this message
+                        } else if serialized.contains("\"method\":\"notifications/progress\"") {
+                            debug!("Filtering out buffered notifications/progress notification during replay");
+                            continue; // Skip this message
+                        }
+                        "other"
+                    }
+                };
+                
+                debug!("Sending buffered notification: {}", notification_method);
+                if let Err(e) = transport.send(message.clone()).await {
+                    error!("Error sending buffered notification {}: {}", notification_method, e);
+                    // If sending a buffered notification fails, we probably just log it.
+                    // Triggering another disconnect cycle might be excessive.
+                }
+            }
             _ => {
-                // Notifications etc.
+                // Other message types (Response, Error)
                 if let Err(e) = transport.send(message.clone()).await {
                     error!("Error sending buffered message: {}", e);
-                    // If sending a buffered notification fails, we probably just log it.
+                    // If sending a buffered message fails, we probably just log it.
                     // Triggering another disconnect cycle might be excessive.
                 }
             }

@@ -16,6 +16,7 @@ use tracing_subscriber::FmtSubscriber;
 mod cli;
 mod core;
 mod state;
+mod message_transform;
 
 use crate::cli::Args;
 use crate::core::{connect, flush_buffer_with_errors};
@@ -51,7 +52,7 @@ impl SseClientType {
     }
 }
 
-type StdinCodec = rmcp::transport::async_rw::JsonRpcMessageCodec<ClientJsonRpcMessage>;
+type StdinCodec = message_transform::McpCompatCodec;
 type StdoutCodec = rmcp::transport::async_rw::JsonRpcMessageCodec<ServerJsonRpcMessage>;
 type StdinStream = FramedRead<Stdin, StdinCodec>;
 type StdoutSink = FramedWrite<Stdout, StdoutCodec>;

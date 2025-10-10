@@ -955,6 +955,7 @@ version = "0.2.2"
 dependencies = [
  "anyhow",
  "axum",
+ "bytes",
  "clap",
  "futures",
  "openssl-sys",
