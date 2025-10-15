@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.3 (2025-10-15)
+
+* Bug fixes
+  * Fix upstream JSON-RPC errors being handled as transport errors, causing reconnects for things like unsupported methods (https://github.com/modelcontextprotocol/rust-sdk/pull/486)
+
 ## 0.2.2 (2025-06-24)
 
 * Bug fixes
