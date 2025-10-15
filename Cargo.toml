@@ -4,7 +4,7 @@ version = "0.2.2"
 edition = "2024"
 
 [dependencies]
-rmcp = { version = "0.6.1", features = [
+rmcp = { git = "https://github.com/SteffenDE/mcp-rust-sdk.git", branch = "sd-bad-request", features = [
     "server",
     "client",
     "reqwest",
@@ -29,7 +29,7 @@ version = "0.9"
 features = ["vendored"]
 
 [dev-dependencies]
-rmcp = { version = "0.6.1", features = [
+rmcp = { git = "https://github.com/SteffenDE/mcp-rust-sdk.git", branch = "sd-bad-request", features = [
     "server",
     "client",
     "reqwest",
