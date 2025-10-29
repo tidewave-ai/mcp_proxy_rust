@@ -6,6 +6,7 @@ use crate::core::{
 use crate::{SseClientType, StdoutSink};
 use anyhow::Result;
 use futures::SinkExt;
+use reqwest::header::HeaderMap;
 use rmcp::model::{
     ClientJsonRpcMessage, ClientNotification, ClientRequest, EmptyResult, InitializedNotification,
     InitializedNotificationMethod, ProtocolVersion, RequestId, ServerJsonRpcMessage, ServerResult,
@@ -47,6 +48,7 @@ pub enum ProxyState {
 pub struct AppState {
     /// URL of the SSE server
     pub url: String,
+    pub headers: Option<HeaderMap>,
     /// Maximum time to try reconnecting in seconds (None = infinity)
     pub max_disconnected_time: Option<u64>,
     /// Override protocol version
@@ -83,10 +85,12 @@ impl AppState {
     pub fn new(
         url: String,
         max_disconnected_time: Option<u64>,
+        headers: Option<HeaderMap>,
         override_protocol_version: Option<ProtocolVersion>,
     ) -> Self {
         Self {
             url,
+            headers,
             max_disconnected_time,
             override_protocol_version,
             disconnected_since: None,

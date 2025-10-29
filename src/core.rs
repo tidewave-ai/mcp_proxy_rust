@@ -1,6 +1,6 @@
 use crate::state::{AppState, BufferMode, ProxyState, ReconnectFailureReason};
 use crate::{DISCONNECTED_ERROR_CODE, SseClientType, StdoutSink, TRANSPORT_SEND_ERROR_CODE};
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use futures::FutureExt;
 use futures::SinkExt;
 use rmcp::model::{
@@ -38,10 +38,15 @@ pub(crate) async fn connect(app_state: &AppState) -> Result<SseClientType> {
     // this function should try sending a POST request to the sse_url and see if
     // the server responds with 405 method not supported. If so, it should call
     // connect_with_sse, otherwise it should call connect_with_streamable.
+    let mut headers = app_state.headers.clone().unwrap_or_default();
+    headers.insert(
+        "Accept",
+        "application/json,text/event-stream".parse().unwrap(),
+    );
+    headers.insert("Content-Type", "application/json".parse().unwrap());
     let result = reqwest::Client::new()
         .post(app_state.url.clone())
-        .header("Accept", "application/json,text/event-stream")
-        .header("Content-Type", "application/json")
+        .headers(headers)
         .body(r#"{"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}"#)
         .send()
         .await?;
@@ -59,6 +64,11 @@ pub(crate) async fn connect(app_state: &AppState) -> Result<SseClientType> {
 }
 
 pub(crate) async fn connect_with_streamable(app_state: &AppState) -> Result<SseClientType> {
+    let mut builder = reqwest::Client::builder();
+    if let Some(headers) = app_state.headers.clone() {
+        builder = builder.default_headers(headers);
+    }
+
     let result = rmcp::transport::StreamableHttpClientTransport::with_client(
         reqwest::Client::default(),
         rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig {
@@ -75,8 +85,13 @@ pub(crate) async fn connect_with_streamable(app_state: &AppState) -> Result<SseC
 }
 
 pub(crate) async fn connect_with_sse(app_state: &AppState) -> Result<SseClientType> {
+    let mut builder = reqwest::Client::builder();
+    if let Some(headers) = app_state.headers.clone() {
+        builder = builder.default_headers(headers);
+    }
+
     let result = rmcp::transport::SseClientTransport::start_with_client(
-        reqwest::Client::default(),
+        builder.build().context("failed to build reqwest client")?,
         rmcp::transport::sse_client::SseClientConfig {
             sse_endpoint: app_state.url.clone().into(),
             // we don't want the sdk to perform any retries
