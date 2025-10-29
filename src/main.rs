@@ -5,7 +5,6 @@ use rmcp::{
     model::{ClientJsonRpcMessage, ErrorCode, ProtocolVersion, ServerJsonRpcMessage},
     transport::{StreamableHttpClientTransport, Transport, sse_client::SseClientTransport},
 };
-use std::env;
 use tokio::io::{Stdin, Stdout};
 use tokio::time::{Duration, Instant, sleep};
 use tokio_util::codec::{FramedRead, FramedWrite};
@@ -145,8 +144,9 @@ async fn main() -> Result<()> {
     // Initialize application state
     let mut app_state = AppState::new(
         sse_url.to_string(),
-        args.max_disconnected_time,
+        args.transport_type,
         args.headers.take(),
+        args.max_disconnected_time,
         override_protocol_version,
     );
     // Pass channel senders to state
