@@ -1,3 +1,4 @@
+use crate::cli::TransportType;
 use crate::core::{
     flush_buffer_with_errors, generate_id, initiate_post_reconnect_handshake,
     process_buffered_messages, process_client_request, reply_disconnected,
@@ -6,6 +7,7 @@ use crate::core::{
 use crate::{SseClientType, StdoutSink};
 use anyhow::Result;
 use futures::SinkExt;
+use reqwest::header::HeaderMap;
 use rmcp::model::{
     ClientJsonRpcMessage, ClientNotification, ClientRequest, EmptyResult, InitializedNotification,
     InitializedNotificationMethod, ProtocolVersion, RequestId, ServerJsonRpcMessage, ServerResult,
@@ -47,6 +49,8 @@ pub enum ProxyState {
 pub struct AppState {
     /// URL of the SSE server
     pub url: String,
+    pub headers: Option<HeaderMap>,
+    pub transport_type: TransportType,
     /// Maximum time to try reconnecting in seconds (None = infinity)
     pub max_disconnected_time: Option<u64>,
     /// Override protocol version
@@ -82,11 +86,15 @@ pub struct AppState {
 impl AppState {
     pub fn new(
         url: String,
+        transport_type: TransportType,
+        headers: Option<HeaderMap>,
         max_disconnected_time: Option<u64>,
         override_protocol_version: Option<ProtocolVersion>,
     ) -> Self {
         Self {
             url,
+            headers,
+            transport_type,
             max_disconnected_time,
             override_protocol_version,
             disconnected_since: None,

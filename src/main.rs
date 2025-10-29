@@ -5,7 +5,6 @@ use rmcp::{
     model::{ClientJsonRpcMessage, ErrorCode, ProtocolVersion, ServerJsonRpcMessage},
     transport::{StreamableHttpClientTransport, Transport, sse_client::SseClientTransport},
 };
-use std::env;
 use tokio::io::{Stdin, Stdout};
 use tokio::time::{Duration, Instant, sleep};
 use tokio_util::codec::{FramedRead, FramedWrite};
@@ -103,7 +102,7 @@ async fn connect_with_retry(app_state: &AppState, delay: Duration) -> Result<Sse
 // --- Main Function ---
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
+    let mut args = Args::parse();
     let log_level = if args.debug {
         tracing::Level::DEBUG
     } else {
@@ -117,15 +116,7 @@ async fn main() -> Result<()> {
 
     tracing::subscriber::set_global_default(subscriber).context("Failed to set up logging")?;
 
-    // Get the SSE URL from args or environment
-    let sse_url = match args.sse_url {
-          Some(url) => url,
-          None => env::var("SSE_URL").context(
-              "Either the URL must be passed as the first argument or the SSE_URL environment variable must be set",
-          )?,
-      };
-
-    debug!("Starting MCP proxy with URL: {}", sse_url);
+    debug!("Starting MCP proxy with URL: {}", args.sse_url);
     debug!("Max disconnected time: {:?}s", args.max_disconnected_time);
 
     // Parse protocol version override if provided
@@ -149,9 +140,12 @@ async fn main() -> Result<()> {
     let (reconnect_tx, mut reconnect_rx) = tokio::sync::mpsc::channel(10);
     let (timer_tx, mut timer_rx) = tokio::sync::mpsc::channel(10);
 
+    let sse_url = args.sse_url.clone();
     // Initialize application state
     let mut app_state = AppState::new(
-        sse_url.clone(),
+        sse_url.to_string(),
+        args.transport_type,
+        args.headers.take(),
         args.max_disconnected_time,
         override_protocol_version,
     );
