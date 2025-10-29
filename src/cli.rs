@@ -1,12 +1,13 @@
 use clap::Parser;
 use reqwest::header::HeaderMap;
+use url::Url;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
     /// The URL of the SSE endpoint to connect to
-    #[arg(value_name = "URL", env = "SSE_URL")]
-    pub sse_url: String,
+    #[arg(value_name = "URL", env = "SSE_URL", value_parser = parse_url)]
+    pub sse_url: Url,
 
     /// Enable debug logging
     #[arg(long)]
@@ -37,4 +38,9 @@ fn parse_header_map(s: &str) -> Result<Option<HeaderMap>, String> {
         http_serde::option::header_map::deserialize(&mut de).map_err(|e| e.to_string())?
     };
     Ok(headers)
+}
+
+fn parse_url(s: &str) -> Result<Url, String> {
+    let url = Url::parse(s).map_err(|e| e.to_string())?;
+    Ok(url)
 }

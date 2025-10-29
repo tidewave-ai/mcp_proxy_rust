@@ -144,7 +144,7 @@ async fn main() -> Result<()> {
     let sse_url = args.sse_url.clone();
     // Initialize application state
     let mut app_state = AppState::new(
-        sse_url.clone(),
+        sse_url.to_string(),
         args.max_disconnected_time,
         args.headers.take(),
         override_protocol_version,

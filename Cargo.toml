@@ -25,6 +25,7 @@ tokio-util = "0.7.15"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 http-serde = "2.1.1"
 serde_json = "1.0.145"
+url = "2.5.7"
 
 [dependencies.openssl-sys]
 version = "0.9"
